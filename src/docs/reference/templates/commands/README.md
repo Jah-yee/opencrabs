@@ -3,7 +3,7 @@
 Copy-paste `commands.toml` fragments for workflows that genuinely need the
 LLM. Everything in here costs tokens on every invocation: that is the point
 of this directory. The mechanical, zero-cost versions of these commands
-(`/architecture`, `/attach`) ship **inside the binary** and need no
+(`/architecture`, `/attach`, `/audit`) ship **inside the binary** and need no
 install.
 
 This directory follows the same opt-in tier as `templates/skills/` and
