@@ -43,11 +43,15 @@ async fn fresh_service() -> (Database, SessionService) {
 fn migration_archives_duplicate_losers_and_enforces_uniqueness() {
     let migrations = build_migrations();
     let mut conn = rusqlite::Connection::open_in_memory().expect("raw conn");
-    // All migrations EXCEPT the new one, so the table is pre-#1721 shaped.
-    let last = crate::db::database::MIGRATION_SQL.len() - 1;
-    migrations
-        .to_version(&mut conn, last)
-        .expect("prefix apply");
+    // All migrations EXCEPT the #1721 chat-key one, so the table is
+    // pre-#1721 shaped. Anchor by content, not list position: the #1721
+    // SQL is the only entry containing channel_chat_key, and appended
+    // migrations must not shift the cutoff.
+    let cut = crate::db::database::MIGRATION_SQL
+        .iter()
+        .position(|m| m.contains("channel_chat_key"))
+        .expect("#1721 chat-key migration present in MIGRATION_SQL");
+    migrations.to_version(&mut conn, cut).expect("prefix apply");
 
     // Three live rows claiming the same chat (10 of 13 real keys looked
     // like this), plus one unrelated row that must not be touched.
