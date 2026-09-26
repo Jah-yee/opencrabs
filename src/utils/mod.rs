@@ -30,6 +30,7 @@ pub mod stop_intent;
 pub mod string;
 pub mod text_complete;
 mod tool_context;
+pub mod tree_view;
 
 pub use approval::{
     check_approval_policy, persist_auto_always_policy, persist_auto_session_policy,

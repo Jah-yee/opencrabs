@@ -1165,6 +1165,71 @@ impl App {
                 self.plan_document = None;
                 true
             }
+            s if s == "/architecture" || s.starts_with("/architecture ") => {
+                // Mechanical directory tree (#933): pure std::fs walk, no
+                // LLM, zero per-use cost. Same surface on channels.
+                let arg = input.strip_prefix("/architecture").unwrap_or("").trim();
+                let reply = crate::channels::commands::run_architecture(if arg.is_empty() {
+                    None
+                } else {
+                    Some(arg)
+                });
+                self.push_system_message(reply);
+                true
+            }
+            s if s == "/attach" || s.starts_with("/attach ") => {
+                // Mechanical file attach (#933): validate each path against
+                // the compiled confidential gate, ride the #1740 pipeline for
+                // image attachments, and leave a bracketed note in the input
+                // buffer so the next sent message carries every file to the
+                // model. No LLM calls, no content dumping.
+                let args = input.strip_prefix("/attach").unwrap_or("").trim();
+                if args.is_empty() {
+                    self.push_system_message(
+                        "attach: usage /attach <path> [more paths...]".to_string(),
+                    );
+                    return true;
+                }
+                // One verdict pass shared with the channel surface (#933):
+                // identical status lines, identical gates.
+                let (lines, attached_paths) = crate::channels::commands::attach_status_lines(args);
+                for raw in &attached_paths {
+                    let extraction = Self::extract_attachments(raw);
+                    for notice in extraction.notices {
+                        self.push_system_message(notice);
+                    }
+                    if !extraction.attachments.is_empty() {
+                        if let Some(session) = &self.current_session {
+                            for att in &extraction.attachments {
+                                let file_svc = self.file_service.clone();
+                                let sid = session.id;
+                                let path = std::path::PathBuf::from(&att.path);
+                                tokio::spawn(async move {
+                                    if let Err(e) =
+                                        file_svc.get_or_create_file(sid, path, None).await
+                                    {
+                                        tracing::warn!("Failed to track /attach file: {e}");
+                                    }
+                                });
+                            }
+                        }
+                        self.attachments.extend(extraction.attachments);
+                    }
+                }
+                if !attached_paths.is_empty() {
+                    let notes = attached_paths
+                        .iter()
+                        .map(|p| format!("[User attached file: {p}]"))
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    self.insert_text_at_cursor(&format!("{notes}\n"));
+                    self.notification =
+                        Some(format!("📎 Attached {} file(s)", attached_paths.len()));
+                    self.notification_shown_at = Some(std::time::Instant::now());
+                }
+                self.push_system_message(lines.join("\n"));
+                true
+            }
             "/rebuild" => {
                 // Run the build DETACHED via the shared BackgroundTaskManager
                 // (#1748): live timer and status file come free, and the
