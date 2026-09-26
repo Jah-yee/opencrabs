@@ -50,9 +50,15 @@ async fn test_global_429_lock_cooldown() {
     assert!(is_global_cooldown_active());
 
     // Wait should consume remaining and return non-zero (~7s)
+    // The deadline is absolute: any real time that passes between
+    // record_global_429 and this call already counts toward the cooldown,
+    // so under parallel test load the thread can be descheduled for hundreds
+    // of ms and the returned remaining shrinks accordingly (observed 6.6s on
+    // a loaded run, 2026-09-26). Floor at 6s: a margin or arithmetic bug
+    // yields ~5s and is still caught; the ceiling stays 7.1s.
     let waited = wait_global_cooldown().await;
     assert!(
-        waited >= Duration::from_millis(6900) && waited <= Duration::from_millis(7100),
+        waited >= Duration::from_millis(6000) && waited <= Duration::from_millis(7100),
         "waited {waited:?} expected ~7s"
     );
 
@@ -73,9 +79,13 @@ async fn test_global_429_lock_extension_monotonic() {
 
     // A smaller 3s cooldown shouldn't shorten the 12s deadline
     record_global_429(Duration::from_secs(3));
+    // Same absolute-deadline semantics as test_global_429_lock_cooldown:
+    // deschedule jitter under load eats into the window before the wait even
+    // starts. Floor at 11s: losing the extension or the margin yields ~10s
+    // or less and is still caught.
     let waited = wait_global_cooldown().await;
     assert!(
-        waited >= Duration::from_millis(11900) && waited <= Duration::from_millis(12100),
+        waited >= Duration::from_millis(11000) && waited <= Duration::from_millis(12100),
         "waited {waited:?} expected ~12s"
     );
 
