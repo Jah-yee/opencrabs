@@ -120,6 +120,12 @@ pub(crate) const MIGRATION_SQL: &[&str] = &[
     // unique index). Column add is idempotent-safe; the dedup must run
     // before the unique index or duplicated keys fail the migration.
     include_str!("../migrations/20260925220000_add_session_channel_chat_key.sql"),
+    // #1705: audit-trail READ + OUTCOME columns — turn_retrievals (one row
+    // per read-class retrieval) and turn_outcomes (mechanical per-turn
+    // verdict). Idempotent CREATE + indexes; both stay empty until
+    // [features] audit_recording = true, and nothing reads them except the
+    // /audit viewer. Appended last per the list invariant.
+    include_str!("../migrations/20260926000001_add_audit_turn_retrievals.sql"),
 ];
 
 pub(crate) fn build_migrations() -> Migrations<'static> {

@@ -339,6 +339,12 @@ pub struct AgentService {
 
     /// Whether to auto-approve tool execution
     pub(super) auto_approve_tools: bool,
+    /// Audit recording (#1705): when true, read-class tool calls persist a
+    /// `turn_retrievals` row and turn finalization persists a
+    /// `turn_outcomes` row for the /audit viewer. Resolved from
+    /// `[features] audit_recording` once at construction (same policy as
+    /// the other flattened flags) so the per-call gate is a bool check.
+    pub(super) audit_recording: bool,
 
     /// Headless session (#129): no live user surface (CLI one-shot run, cron
     /// daemon execute, sub-agent spawn). Stamped into every
@@ -519,6 +525,7 @@ impl AgentService {
             auto_approve_tools: crate::utils::approval::policy_auto_approves(
                 &config.agent.approval_policy,
             ),
+            audit_recording: config.features.audit_recording,
             headless: false,
             silent_compaction: config.agent.silent_compaction,
             background_compaction: config.agent.background_compaction,
@@ -655,6 +662,13 @@ impl AgentService {
         self.provider()
             .configured_context_window()
             .unwrap_or(self.context_limit)
+    }
+
+    /// Whether audit recording (#1705) is enabled: the construction-time
+    /// resolution of `[features] audit_recording`. Public because the
+    /// /audit viewer lives outside this module (channels/commands.rs, TUI).
+    pub fn audit_recording_enabled(&self) -> bool {
+        self.audit_recording
     }
 
     /// Per-session context window budget. Mirrors `provider_for_session`:

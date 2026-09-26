@@ -6945,6 +6945,47 @@ impl AgentService {
                                                     );
                                                 }
                                             });
+
+                                            // Audit READ row (#1705): only when the
+                                            // operator enabled recording AND this tool
+                                            // actually pulls external content into
+                                            // context. Gated BEFORE any repo work, so a
+                                            // disabled flag costs a bool check per call.
+                                            if self.audit_recording
+                                                && let Some(kind) = crate::db::repository::turn_retrieval::retrieval_kind(&tool_name)
+                                            {
+                                                let repo = crate::db::repository::TurnRetrievalRepository::new(pool.clone());
+                                                let rid = uuid::Uuid::new_v4().to_string();
+                                                let sid = session_id.to_string();
+                                                let mid = assistant_db_msg.id.to_string();
+                                                let tname = tool_name.clone();
+                                                let target = crate::db::repository::turn_retrieval::audit_target(
+                                                    &tool_name,
+                                                    &tool_input_for_progress,
+                                                )
+                                                .unwrap_or_else(|| "unknown".to_string());
+                                                let hash = {
+                                                    use sha2::{Digest, Sha256};
+                                                    let mut h = Sha256::new();
+                                                    h.update(content.as_bytes());
+                                                    format!("{:x}", h.finalize())
+                                                };
+                                                let preview: String =
+                                                    content.chars().take(128).collect();
+                                                tokio::spawn(async move {
+                                                    if let Err(e) = repo
+                                                        .record_retrieval(
+                                                            &rid, &sid, &mid, &tname, kind,
+                                                            &target, Some(&hash), Some(&preview),
+                                                        )
+                                                        .await
+                                                    {
+                                                        tracing::error!(
+                                                            "[AUDIT] Failed to record turn retrieval: {e}"
+                                                        );
+                                                    }
+                                                });
+                                            }
                                         }
 
                                         let output_summary: String = strip_ansi_output(&content)
@@ -8069,6 +8110,31 @@ impl AgentService {
         // automatic fallback this turn took doesn't stick over their pick.
         self.finalize_manual_switch(session_id, start_switch_epoch, &session_service)
             .await;
+
+        // Audit OUTCOME row (#1705): the settled turn's mechanical verdict,
+        // classified from the tool outputs only (test receipts / rustc
+        // errors). Recording off → no write at all, the /audit viewer stays
+        // ACTION-only. A turn that died on an error path never reaches this
+        // settle point and honestly has no OUTCOME row: the viewer renders
+        // those with a dash, not a guess.
+        if self.audit_recording
+            && let Some(pool) = crate::db::global_pool()
+        {
+            let (outcome, evidence) =
+                crate::db::repository::turn_retrieval::turn_outcome_from_outputs(&turn_tool_output);
+            let repo = crate::db::repository::TurnRetrievalRepository::new(pool.clone());
+            let rid = uuid::Uuid::new_v4().to_string();
+            let sid = session_id.to_string();
+            let mid = assistant_db_msg.id.to_string();
+            tokio::spawn(async move {
+                if let Err(e) = repo
+                    .record_outcome(&rid, &sid, &mid, outcome, evidence.as_deref())
+                    .await
+                {
+                    tracing::error!("[AUDIT] Failed to record turn outcome: {e}");
+                }
+            });
+        }
 
         // Plan archive at turn settle (ADR 0005 Decision 9): the completing
         // turn keeps its live plan and full all-☑ checklist through delivery;

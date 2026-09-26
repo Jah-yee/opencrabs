@@ -24,6 +24,7 @@ pub mod session_binding;
 pub mod session_skills;
 pub mod tool_execution;
 mod traits;
+pub mod turn_retrieval;
 pub mod usage_ledger;
 
 pub use analytics_event::AnalyticsEventRepository;
@@ -46,6 +47,7 @@ pub use session_binding::SessionBindingRepository;
 pub use session_skills::SessionSkillsRepository;
 pub use tool_execution::ToolExecutionRepository;
 pub use traits::Repository;
+pub use turn_retrieval::{AuditRow, TurnRetrievalRepository};
 pub use usage_ledger::UsageLedgerRepository;
 pub mod notify_queue;
 pub use notify_queue::{NotifyQueueRepository, NotifyQueueRow};
