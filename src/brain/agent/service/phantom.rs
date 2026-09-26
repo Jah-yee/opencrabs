@@ -1107,12 +1107,16 @@ pub fn looks_truncated_mid_sentence(text: &str) -> bool {
     if last.is_alphanumeric() {
         return true;
     }
-    // A trailing single backtick is legitimate ONLY when it CLOSES inline
-    // code (even backtick parity outside fenced blocks). Odd parity means
-    // the stream died on an OPENING backtick mid-code — the #36 incident
-    // shape, which this function previously read as complete.
-    if last == '`' {
-        return backticks_outside_fences(trimmed) % 2 == 1;
+    // Inline-code parity is a LAST-CHAR-AGNOSTIC structural signal: no
+    // complete markdown reply leaves an inline code span open, so odd
+    // backticks outside fences means the stream died mid-span whichever
+    // char it died on. Old code only consulted parity when the last char
+    // WAS the backtick (#36 shape); the 2026-09-26 incident (#1753) died
+    // one char deeper on an opening quote — `... gated on `content.`
+    // contains("` with a provider EndTurn lie — and shipped unmarked to
+    // Telegram and TUI alike. This branch subsumes the #36 case.
+    if backticks_outside_fences(trimmed) % 2 == 1 {
+        return true;
     }
     matches!(
         last,
@@ -1122,8 +1126,9 @@ pub fn looks_truncated_mid_sentence(text: &str) -> bool {
 
 /// Count backticks on lines outside fenced code blocks. Fence delimiter
 /// lines themselves don't count — their backticks delimit blocks, they
-/// are not inline code. Used for the trailing-backtick parity check in
-/// [`looks_truncated_mid_sentence`] (#36).
+/// are not inline code. Used for the inline-code parity check in
+/// [`looks_truncated_mid_sentence`] (#36, generalized for #1753: last-char
+/// agnostic, a dangling span is the signal, not the char it ends on).
 fn backticks_outside_fences(text: &str) -> usize {
     let mut in_fence = false;
     let mut count = 0;

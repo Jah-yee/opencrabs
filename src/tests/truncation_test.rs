@@ -63,6 +63,35 @@ fn backtick_closed_inline_code_clean() {
 }
 
 #[test]
+fn quote_tail_inside_open_code_span_is_truncated() {
+    // #1753 incident shape: the stream died one char PAST the opening
+    // backtick, on the opening quote of a string literal — last char `"`,
+    // odd inline-code parity. Old code only consulted parity when the
+    // last char WAS the backtick, so this read as complete-looking and
+    // shipped unmarked (provider EndTurn lie, Telegram + TUI alike).
+    let truncated = "The guard is fine, the replay sweep is gated on `content.contains(\"";
+    assert!(looks_truncated_mid_sentence(truncated));
+}
+
+#[test]
+fn quoted_period_ending_with_balanced_spans_stays_clean() {
+    // False-positive pin: `"…done."` endings are legitimate — which is
+    // exactly why `"` is NOT on the cut-char denylist. Balanced backticks,
+    // quote after a period: complete.
+    let complete = "He typed exit and the shell politely replied \"Goodbye, see you soon.\"";
+    assert!(!looks_truncated_mid_sentence(complete));
+}
+
+#[test]
+fn odd_parity_flags_even_on_a_period_ending() {
+    // Semantics of the generalization: a dangling inline-code span is the
+    // signal; the final character is not. Period ending, one unclosed
+    // span -> truncated.
+    let text = "To check the status just run `git status and read the worktree lines.";
+    assert!(looks_truncated_mid_sentence(text));
+}
+
+#[test]
 fn unclosed_fence_truncated() {
     let text = "Here is the script you asked for:\n\n```bash\necho hello\nls -la";
     assert!(looks_truncated_mid_sentence(text));
