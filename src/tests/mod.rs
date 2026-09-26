@@ -614,6 +614,7 @@ pub mod phantom_side_effect_test;
 pub mod phantom_structured_report_test;
 pub mod phantom_unbacked_facts_test;
 pub mod plan_approval_gate_test;
+pub mod plan_card_budget_test;
 pub mod plan_card_line_breaks_test;
 pub mod plan_card_lock_test;
 pub mod plan_card_persist_test;

@@ -44,6 +44,36 @@ fn paint_canvas(f: &mut Frame) {
     f.render_widget(Block::default().style(Style::default().bg(bg)), f.area());
 }
 
+/// Budget the plan card against the real terminal rows (#1750).
+///
+/// The card used to take `min(tasks + 2, 12)` unconditionally, so on a
+/// short pane the fixed-height demands (chat min, card, queue preview,
+/// input, status bar) exceeded the screen and the solver starved the
+/// only flexible chunk: chat. The live tool rows then got a 2-row
+/// sliver against the card's edge and every tool event repainted it,
+/// which read as content popping out from behind the widget. The card
+/// yields first instead: it shrinks to the rows left after reserving
+/// the status bar, the input box, the queue preview, and a chat floor,
+/// and its own windowing indicator ("N before/after") makes the
+/// truncation honest. Only called with `desired >= 3` (seed strip or
+/// task card), so the floor never inflates the result.
+pub(crate) fn plan_card_height(
+    desired: u16,
+    area_height: u16,
+    input_height: u16,
+    queue_height: u16,
+) -> u16 {
+    const CHAT_FLOOR: u16 = 6;
+    const CARD_MIN: u16 = 3; // header + one windowed task row + footer
+    const STATUS_BAR: u16 = 1;
+    let reserved = STATUS_BAR
+        .saturating_add(input_height)
+        .saturating_add(queue_height)
+        .saturating_add(CHAT_FLOOR);
+    let budget = area_height.saturating_sub(reserved).max(CARD_MIN);
+    desired.min(budget).max(CARD_MIN)
+}
+
 /// Render the entire UI
 pub fn render(f: &mut Frame, app: &mut App) {
     paint_canvas(f);
@@ -108,18 +138,23 @@ pub fn render(f: &mut Frame, app: &mut App) {
     //     let `plan_widget` scroll a window centered on the current
     //     task. The "… (N before, M after)" indicator inside the widget
     //     tells the user there's more above/below.
+    //   - On short panes the card yields first (`plan_card_height`):
+    //     it shrinks to the rows left after reserving the status bar,
+    //     input, queue preview, and a chat floor, so chat never gets
+    //     crushed into a sliver against the card's edge (#1750).
     let plan_height = app
         .plan_document
         .as_ref()
         .filter(|p| p.status == crate::tui::plan::PlanStatus::Active)
         .map(|p| {
-            if p.tasks.is_empty() {
+            let desired: u16 = if p.tasks.is_empty() {
                 // Seed window (approved design, checklist not built yet):
                 // a 3-line strip carries Building checklist… / seed-error.
                 3
             } else {
                 (p.tasks.len() + 2).min(12) as u16
-            }
+            };
+            plan_card_height(desired, f.area().height, input_height, queue_height)
         })
         .unwrap_or(0);
 
