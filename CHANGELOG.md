@@ -7,13 +7,132 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.4] - 2026-09-26
+
+103 commits since v0.5.3, 7 contributors. 224 files changed, +18,582 / -1,426 lines.
+
+An agent-experience window. ACP sessions became first-class: the context meter is restored on session load, session/load replays the transcript and restores the per-session model, set_model persists across processes, session/set_mode applies the approval policy server-side, session/compact pushes, and session/new offers a live model catalog. Full-screen editors (!vi, !nano) now get the real terminal through a handoff and return to the chat on exit (#1744). Attachments went universal: paste or drop any file type through one shared router (#1740), with common-type classification (#1743). Three mechanical zero-cost commands landed compiled: /architecture, /attach (#933) and an opt-in audit trail with its /audit viewer (#1705). Search gained a serper_search engine (Google SERP) with by-URL dedup across the web_search fan-out (#1731); generate_image grew a provider chain at parity with vision (#1672, #1675); and the L1 decision cache now serves exact-repeat classification decisions without a model call (decide_cached tool, [decisions] tiers in shadow/live/off, /usage accounting, TTL sweep) (#1648). Usage billing prefers provider-reported cost over table estimates (#1707), unknown-price models are no longer billed as free, and the timeout chain resolves [providers.<name>] -> [agent] -> default across every provider family, with Anthropic and Gemini honouring it (#1688, #1697, #1689, #1698); compaction notices moved behind compaction_notice, off by default (#1686). Reliability: truncation sets inline-code parity flags regardless of last char (#1753), the plan card budgets against real terminal rows (#1750), tool success-rate health surfaces at model selection time (#1706), WhatsApp inbound attachments persist to the durable store (#1729), getUpdates 409 conflicts escalate instead of silently fighting (#1721) over an atomic insert-or-resolve for live channel sessions, the mermaid connect stage retries once (#1741), reply recovery carries an excerpt and stops chasing the topic root (#548), A2A notify retries are reserve-before-deliver idempotent (#199), phantom-announcement detectors catch marker-less bare participles in en/pt/es (#1694) and score fact detectors on mixed iterations (#1693), and the global 429 cooldown tests tolerate deschedule jitter (#1754).
 ### ✨ Features
 
-- **decisions**: L1 tiered decision cache (#1648): `decide_cached` tool, `[decisions.tiers.<name>]` config with shadow/live/off modes, `/usage` + Mission Control accounting, startup TTL sweep. Shadow-first; release-day evaluation bar >= 30% would-hit over >= 100 calls per tier
+- `dcc2caa4` **audit**: opt-in audit trail recording with /audit viewer (#1705)
+- `188d6110` **commands**: add compiled /architecture and /attach commands (#933)
+- `4c21f89b` **utils**: normalize typographic dashes out of model prose (#1745)
+- `db57b38e` **tui**: terminal handoff so !vi/!nano run interactively (#1744)
+- `7cfd9089` **acp**: restore context meter on session load
+- `fd2d087e` **acp**: persist set_model pick on the session row for cross-process restore
+- `6c70c180` **acp**: include context window size in usage updates
+- `bfb97c46` **acp**: replay transcript + restore per-session model on session/load
+- `e4c19918` **cli**: add --quiet to run for machine-pure stdout
+- `db7485a4` **acp**: session/compact + available_commands push
+- `9d00983c` **acp**: native session/set_mode with server-side approval policy
+- `7f6eb6f2` **acp**: live model catalog in session/new + pair-aware set_model
+- `8cf1302b` **tui**: paste and drop any file type with a shared attachment router (#1740)
+- `89757c75` **tui**: classify common file types for paste and drop (#1743)
+- `bcaeadf6` **tui**: byte-stream capture around redraw + ANSI strip on model text (#1719)
+- `eddff5e1` **agent**: surface tool success-rate health at selection time (#1706)
+- `0a64c124` **tools**: serper_search engine (Google SERP) + by-URL dedup in web_search fan-out (#1731)
+- `671fd05b` **usage**: ledger prefers provider-reported cost over table estimate (#1707)
+- `afaad183` **config**: put the compaction pair behind compaction_notice, off by default (#1686)
+- `9bf29047` **provider**: anthropic and gemini honour the timeout chain (#1689) (#1698)
+- `715edd67` **config**: resolve timeout flags [providers.<name>] -> [agent] -> default across every provider family (#1688) (#1697)
+- `db27e760` **image**: provider-chain for generate_image, parity with vision (#1672) (#1675)
+- `c484d19b` **tui**: expose /onboard:daemon on the surfaces its dispatch arm already serves
+- `0d4ae8b3` **decisions**: /usage accounting block, mission-control counters, TTL sweep (#1648)
+- `a5878e8d` **decisions**: decide_cached tool with shadow mode and [decisions] config (#1648)
+- `14fd61b1` **decisions**: add decision_cache storage ring (#1648)
 
 ### 🔧 Fixes
 
-- **telegram**: malformed reaction directives can no longer leak as chat bubbles (#1670). A reaction turn that emitted `<<react:>>` with an empty emoji slot survived the extractor's prose guard and shipped as a visible message. The reaction path now strips every remaining marker-shaped debris (empty/word payloads, code-wrapped forms) after extraction and logs when a turn degrades to silence. Fix also closes defect B: reaction-path text replies carried `thread_id: None`, so every reply posted to the forum group's General topic instead of the reacted message's topic; the reply send and its `channel_messages` row now carry the resolved topic
+- `ef2a939f` **telegram**: absorb deschedule jitter in global 429 cooldown wait floors (#1754)
+- `e5c38676` **truncation**: inline-code parity flags regardless of last char (#1753)
+- `a04cec30` **tui**: budget the plan card against real terminal rows (#1750)
+- `7308b0d1` **tui**: cap expanded working-out rows behind the fold ceiling (#1747)
+- `a056b6a9` **acp**: per-call approval override beats config auto-approve policy
+- `8b91813a` **acp**: route session/set_mode to the mode handler
+- `899db3d3` **acp**: stop doubling streamed answers as round aggregates
+- `ab23ac78` **acp**: cover Segment::Blocked in replay and align fixtures with line-start marker contract
+- `93c32e42` **telegram**: stop malformed react directives leaking as bubbles; thread reaction replies (#1670) (#1671)
+- `f327549b` **telegram**: retry mermaid connect stage once, split transient failure headlines (#1741)
+- `99a5a77b` **telegram**: do not chase the topic root in reply recovery (#548)
+- `e315f5f0` **telegram**: carry an excerpt in the pruned reply pointer and de-gate reply recovery (#548)
+- `ff073ac1` **a2a**: notify transport retry with reserve-before-deliver idempotency (#199)
+- `99b4dc01` **channels**: persist WhatsApp inbound attachments to the durable store (#1729)
+- `1248150e` **profile**: launchd-aware daemon preempt on macOS (#1726)
+- `59ec0a3f` **telegram**: detect getUpdates 409 conflict and escalate instead of silently fighting (#1721)
+- `4f61c285` **db**: partial unique index on live channel sessions + atomic insert-or-resolve (#1721)
+- `4043b7e7` **daemon**: explicit -p scopes profile adoption; brain seeding waits for the lock (#1723)
+- `3a68675b` **usage**: distinguish unknown-price models from genuinely free ones (#1717)
+- `53c90256` **provider**: single-final-delta guard on [DONE] — no duplicate finalize after reported usage (#1738)
+- `851f32b4` **agent**: anchored continuation nudge + bounded second attempt on degenerate truncation recovery (#1737)
+- `74fedd09` **shell**: run command strings under a real bash, with honest sh fallback
+- `823caa3c` **compaction**: gate WARN shows one decimal with explicit threshold label (#1733)
+- `15bd5eab` **tui**: keep the final CLI answer visible when a reasoning block trails it
+- `395d2e14` **doctor**: report unrecognized config keys in /doctor (#1725)
+- `68609f8d` **config**: report nested stale keys in loader typo warning (#1724)
+- `b5d87b69` **rsi**: read live config per cycle instead of a startup snapshot
+- `c1e691c7` **telegram**: gate the compaction header pin behind compaction_notice (#1686)
+- `d682cee9` **telegram**: gate forum evidence on is_topic_message, banner stops leaking reply-chain ids (#1708)
+- `cd7c6539` **telegram**: TTS voice notes carry the session thread id (#1683) (#1712)
+- `e80d5c83` **pdfium**: find single-digit pdftoppm page output names
+- `1be75700` **pdfium**: bind the library once per process behind a shared OnceCell
+- `844b392a` **compaction**: announce the gate once per compaction, not per tool iteration (#1686)
+- `f48fb79f` **compaction**: receipt the after-fill on the meter's own basis (#1686)
+- `cafba0a9` **compaction**: announce the fill the gate requested, not the live one (#1686)
+- `ef4dc7e2` **phantom**: catch marker-less bare-participle announcements in en/pt/es (#1694) (#1710)
+- `f2f9f5ca` **phantom**: score fact detectors on mixed iterations (#1693) (#1709)
+- `a4e633d8` **agent**: thinking-loop guard stands down on a delivering stream and is per-provider scopable (#1690) (#1699)
+- `124a3cdc` **provider**: streams must not inherit the transport total wall clock (#1687) (#1692)
+- `a7372ee9` **compaction**: name the roast in every fun arm, as a protocol step (#1685)
+- `6cc2094f` **compaction**: drop the brain-file weld from the marker and round the confirmation like the log (#1676)
+- `d0ebd2cb` **context**: stop anchoring the ctx meter and compaction budget on Claude CLI's cache figure (#1677)
+- `74d84753` **config**: drop the phantom web_search.duckduckgo table from config.toml.example (#1669)
+- `92e71272` **tui**: report an unknown /onboard: suffix instead of silently opening the wizard (#1664)
+- `04c14479` **provider**: sticky fallback counts rescues in a window, not in a row (#1667)
+- `378e94d1` **provider**: retry banners and logs must count from MAX_STREAM_RETRIES (#1668)
+- `c4cc0940` **provider**: z.ai idle default must sit above the host's own 30s cut (#1666)
+- `8f3ee318` **decisions**: fold TOOLS note to fit 100-line template cap (#1648)
+- `0a4d5072` **decisions**: bind decision_stats result in analytics summary (#1648)
+- `c3e1f16a` **tests**: separate module-doc list from trailing prose for rustdoc lint
+- `32481db3` **decisions**: merge carries the decisions overlay, stub provider completes the trait
+- `a3cc31eb` **decisions**: collapse nested margin-floor check for clippy
+
+### 📖 Documentation
+
+- `4522cd9e` **audit**: audit recording section and template README for #1705
+- `ca6fef49` **opt-in**: opt-in command templates and README docs for #933
+- `a54e09fa` **readme**: bang operator editor handoff (#1744)
+- `2dffbd2c` **readme**: document F12 mouse-capture toggle and local file drag & drop (#1739)
+- `60eab754` **readme**: pin harness identity in ~/.claude/CLAUDE.md for claude-cli users (#1711)
+- `43f1c465` **readme**: CLI providers are full agents running their own tools, not LLM backends (#1695)
+- `0b6cf46c` **brain**: record that the compaction marker weld is deleted, not narrowed (#1676)
+- `cc73d888` **provider**: document stream_idle_timeout_secs and its default tiers (#1668)
+- `7dd808a3` **decisions**: [decisions] reference page, README section, TOOLS note (#1648)
+
+### 🧹 Miscellaneous
+
+- `0ad02c1f` **tests**: anchor chat-key migration cutoff by content not position
+- `1783a542` **rebuild**: run rebuilds through detached background tasks, drop the cron special-case (#1748)
+- `ca153a11` **tests**: rustfmt reflow of telegram dedup and quote-reply tests
+- `5791084f` **tui**: editor handoff allowlist, decode, and reap coverage (#1744)
+- `39dcd21e` **acp**: externalize catalog tests to src/tests, pin usage null-token cascade, cover --quiet parse (#1674)
+- `8f2c7667` **tests**: drop wildcard field patterns clippy 1.98 rejects
+- `cdf77888` **acp**: ext-prefix the steer method
+- `878c4af5` **ci**: raise hosted timeout caps for fork PRs (lint 15->25, test 30->60)
+- `37e591df` **usage**: pin unknown-model conservative-default billing (#1717 follow-up)
+- `2f31fb8c` **config**: guard both shapes of the #1249 sweep
+- `0f0ad3ab` **tests**: pin the channel half of the config freeze (#1700)
+- `264aa23a` **channels**: reload factory-built agents on config change (#1700)
+- `0870e9a7` **telegram**: source scans pin the thread-id invariants - no bare sends, no raw ids into rate gates (#1708)
+- `29fda59a` **tui**: /doctor routes straight to the health check, drop the hidden /onboard:health arm (#1665)
+- `1f039341` **theme**: serialise the process-global theme slot across test modules
+- `888b2307` **decisions**: rustfmt decide_cached and its test module
+
+### 📊 Stats
+
+- 103 commits since v0.5.3
+- 224 files changed, +18,582 / -1,426 lines
+- 9,426 tests (9,388 passed, 0 failed, 38 ignored)
+
 
 ## [0.5.3] - 2026-09-20
 
@@ -8867,3 +8986,4 @@ fixes.
 [0.3.83]: https://github.com/adolfousier/opencrabs/compare/v0.3.82...v0.3.83
 [0.5.0]: https://github.com/adolfousier/opencrabs/compare/v0.3.83...v0.5.0
 [0.5.3]: https://github.com/adolfousier/opencrabs/compare/v0.5.2...v0.5.3
+[0.5.4]: https://github.com/adolfousier/opencrabs/compare/v0.5.3...v0.5.4

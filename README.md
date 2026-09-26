@@ -273,6 +273,7 @@ https://github.com/user-attachments/assets/7f45c5f8-acdf-48d5-b6a4-0e4811a9ee23
 |---------|-------------|
 | **Image Attachments** | Paste image paths or URLs into the input — auto-detected and attached as vision content blocks for multimodal models. Also supports pasting raw image data from the clipboard (copied from a browser, screenshot tool, or any app) — on macOS via the clipboard as PNG, on Linux via wl-paste/xclip. The bytes are written to a temp file and routed through the existing image pipeline |
 | **Video Attachments** | Send a video on any channel (mp4, m4v, mov, webm, mkv, avi, 3gp, flv) or paste a video path in the TUI — the agent calls the `analyze_video` tool, which routes through Google Gemini's multimodal video API (inline ≤18 MB, resumable Files API for larger). Requires `image.vision.enabled = true` with a Gemini API key in `config.toml`. Phase 1 is Gemini-native; a frame-extraction fallback for non-Gemini providers (ffmpeg → analyze_image per frame) is on the roadmap |
+| **Universal Paste & Drop** | Paste or drop a file of any type into the input (v0.5.4): one shared attachment router accepts every file type (#1740) and classifies common types (code, docs, archives, data) so each lands in the right pipeline (#1743) |
 | **PDF Support** | Attach PDF files by path — native Anthropic PDF support; for other providers, text is extracted locally via `pdf-extract`. **Scanned / image-only PDFs** (no embedded text) are rendered to page images so vision models can read them — this needs **poppler** (`pdftoppm`) on the system: macOS `brew install poppler`, Debian/Ubuntu `apt install poppler-utils`, Fedora `dnf install poppler-utils`. The one-line installer sets this up automatically; without it, the PDF is still saved and its path handed to the agent (text extraction and the `pdf_to_images` tool can be retried once poppler is present) |
 | **Document Parsing** | Built-in `parse_document` tool extracts text from PDF, DOC, DOCX, XLSX, XLSM, XLSB, XLS, ODS, CSV, HTML, TXT, MD, JSON, XML. All native Rust, zero external services: PDF text via `pdf-extract`, legacy Word 97-2003 `.doc` via `rwml`, DOCX/XML via a `quick-xml` streaming walk, spreadsheets (all five Excel/ODS variants) via `calamine`, CSV via `csv`. Scanned/image-only PDFs fall back to page-image rendering for vision models (see **PDF Support** above). Spreadsheet files are parsed into readable table format with sheet headers. Reading legacy binary `.ppt` is out of scope by design |
 | **Document Generation** | Built-in `generate_document` tool creates XLSX (live Excel formulas), DOCX, and PDF natively in Rust with zero host dependencies, plus PPTX via python-pptx when present. Full styling per format: brand colors, page headers/footers with logos and page numbers, zebra tables, frozen headers, autofilters, number formats, PowerPoint brand templates. Image blocks embed PNG/JPEG inline with optional captions in PDF and DOCX. Generated files are delivered as downloadable attachments on Telegram/WhatsApp/Discord. See [Document Generation](#-document-generation) |
@@ -588,7 +589,7 @@ This solves the core UX problem in mention-only groups: previously, tagging the 
 | **Mission Control** | Full-screen `/mission-control` dialog showing every actionable artifact in one place: pending RSI proposals (inbox cards), recent RSI activity (improvements log feed), the schedule queue (cron jobs + paused/active state), and a live **Analytics** panel (brain file sizes, tool usage with proportional bars, failure rates, RSI applied by dimension, phantom-detection and resolution rates, per-model reliability, stream-recovery counts) with **D / W / M / All** window tabs so a fixed 30-day view cannot hide a tool that has already recovered. Apply or reject inbox proposals inline with `a` / `r` — same machinery as the agent's `rsi_proposals` tool, byte-identical install. Tab between panels, j/k to navigate, Enter for the detail popup, Esc to close. Cron paused jobs flag in orange, active in teal — at-a-glance state |
 | **Skills picker** | Full-screen `/skills` dialog with a live filter input — start typing to narrow the list (case-insensitive on name + description), Tab / Shift-Tab cycle the filtered cards (wraps at the edges), Enter runs the selected skill (sends its body as a prompt to the agent), Esc closes. Built-in skills badge orange; user-installed skills badge teal. When the filter narrows to a single match, Enter just fires it — fastest path to launch a skill |
 | **Browser Automation** | Native browser control via CDP (Chrome DevTools Protocol). Auto-detects your default Chromium-based browser (Chrome, Brave, Edge, Arc, Vivaldi, Opera, Chromium) and uses its profile — your logins, cookies, and extensions carry over. 9 browser tools: navigate, click, type, screenshot, eval JS, extract content, wait for elements, find/inventory elements, batched multi-action. Headed or headless mode with display auto-detection. **Shadow DOM aware:** CSS/text/aria search, the interactive inventory, and click/type/act/wait/screenshot all resolve inside open shadow roots, and closed roots still resolve over CDP. **Note:** Firefox is not supported (no CDP) — if Firefox is your default, OpenCrabs falls back to the first available Chromium browser. Feature-gated under `browser` (included by default) |
-| **ACP Server Mode** | Agent Client Protocol server over stdio JSON-RPC (#1540): editors and agent harnesses like Zed and monocle drive OpenCrabs as their coding agent. `opencrabs acp` serves the session over stdio; prompts, tool calls and streaming updates ride the ACP session protocol |
+| **ACP Server Mode** | Agent Client Protocol server over stdio JSON-RPC (#1540): editors and agent harnesses like Zed and monocle drive OpenCrabs as their coding agent. `opencrabs acp` serves the session over stdio; prompts, tool calls and streaming updates ride the ACP session protocol. Sessions are first-class: the context meter is restored on load and rides usage updates, `session/load` replays the transcript and restores the per-session model, `set_model` persists across processes, native `session/set_mode` applies the approval policy server-side, `session/compact` pushes, and `session/new` offers a live model catalog |
 | **Natural Language Commands** | Tell OpenCrabs to create slash commands — it writes them to `commands.toml` autonomously via the `config_manager` tool |
 | **Mechanical Commands (#933)** | `/architecture [path]` (directory tree, depth-capped, secrets/vendor dirs excluded), `/attach <paths...>` (docs-only file attach: `.md` or `docs/` files, hidden paths and secret files refused in compiled code), `/audit [N]` (audit trail: ACTION rows always, READ + OUTCOME when `[features] audit_recording = true`). All three run in the binary with zero API cost; the LLM-flavored `/architecture-explain` lives as an opt-in template in `src/docs/reference/templates/commands/` |
 | **Live Settings** | Agent can read/write `config.toml` at runtime; Settings TUI screen (press `S`) shows current config; approval policy persists across restarts. Default: auto-approve (use `/approve` to change) |
@@ -602,7 +603,7 @@ This solves the core UX problem in mention-only groups: previously, tagging the 
 |---------|-------------|
 | `opencrabs` | Launch interactive TUI (default) |
 | `opencrabs chat` | Launch TUI with optional `--session <id>` to resume, `--onboard` to force wizard |
-| `opencrabs run <prompt>` | Execute a single prompt non-interactively. Already unattended under the default `approval_policy`; `--auto-approve` / `--yolo` only when the policy is `ask`. `--format text\|json\|markdown` |
+| `opencrabs run <prompt>` | Execute a single prompt non-interactively. Already unattended under the default `approval_policy`; `--auto-approve` / `--yolo` only when the policy is `ask`. `--quiet` suppresses UI chrome for machine-pure stdout. `--format text\|json\|markdown` |
 | `opencrabs agent` | Interactive CLI agent — multi-turn conversation in your terminal, no TUI. `-m <msg>` for single-message mode |
 | `opencrabs status` | System overview: version, provider, channels, database, brain, cron, dynamic tools |
 | `opencrabs doctor` | Full diagnostics: config, provider connectivity, database, brain, channels, CLI tools in PATH |
@@ -2377,6 +2378,9 @@ api_key = "your-exa-key"
 [providers.web_search.brave]
 api_key = "your-brave-key"
 
+[providers.web_search.serper]
+api_key = "your-serper-key"
+
 # Voice (STT/TTS) — dispatched in priority order: Voicebox → OpenAI-compatible → Groq → Local
 # STT Groq API (legacy default): uses Groq Whisper
 [providers.stt.groq]
@@ -3470,6 +3474,7 @@ OpenCrabs includes 40+ built-in tools. The AI can use these during conversation:
 | `web_search` | Search the web (DuckDuckGo, always available, no key needed) |
 | `exa_search` | Neural web search via EXA AI (free via MCP, no API key needed; set key in `keys.toml` for higher rate limits) |
 | `brave_search` | Web search via Brave Search (set key in `keys.toml` — free $5/mo credits at brave.com/search/api) |
+| `serper_search` | Google SERP results via Serper (set key in `keys.toml`, serper.dev); the web_search fan-out dedupes results by URL across engines (#1731) |
 | `http_request` | Make HTTP requests |
 | `web_scrape` | Native URL-to-markdown scraping (zero AI, zero API cost). Fetches a URL, extracts clean markdown, keeps images as `![alt](url)` tags so the agent can vision only what it needs. Includes SSRF protection, sitemap crawling, and profile/project-aware markdown export. Surfaced via `tool_search` (deferred, not in core set) |
 | `memory_search` | Hybrid semantic search — FTS5 keyword + vector embeddings combined via RRF. `scope` picks the corpus: `memory` (daily logs, the default) for history, `brain` for rules and policy in your brain files, `all` for both. Local GGUF, OpenAI-compatible API, or FTS5-only mode. With `.rs` files under `extra_paths`, structural queries ("who calls X") auto-route to the tree-sitter symbol graph (`code-graph` feature, on by default) |
@@ -4918,7 +4923,7 @@ cargo build --release
 # Small release build
 cargo build --profile release-small
 
-# Run tests (9,032 tests: 944 test files under src/tests/, where tests
+# Run tests (9,426 tests: 984 test files under src/tests/, where tests
 # belong — zero inline blocks in production files);
 # 38 slower ones are #[ignore]d to keep the default
 # run fast: profile tests that touch ~/.opencrabs, browser end-to-end
