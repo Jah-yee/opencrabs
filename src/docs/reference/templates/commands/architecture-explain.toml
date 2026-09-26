@@ -1,0 +1,16 @@
+# /architecture-explain: opt-in LLM annotation of the built-in mechanical tree.
+# Copy this fragment into ~/.opencrabs/commands.toml (see README.md in this
+# directory). COSTS TOKENS on every run: the built-in /architecture gives you
+# the tree for free; this fragment only adds the model's one-line purposes.
+[[commands]]
+name = "/architecture-explain"
+description = "Annotate a directory tree with one-line purposes (LLM, costs tokens)"
+action = "prompt"
+prompt = """Run the built-in /architecture command for the path the user gave (or the
+working directory if none) to get the mechanical tree, then produce a compact
+annotated version: one line per entry, `name : purpose`, where purpose is a
+single concise clause inferred from the entry's name, its siblings, and (only
+where the name is ambiguous) a quick peek inside. Do not dump file contents.
+Keep the tree's own indentation. If the tree is larger than ~60 entries,
+annotate only the directories and note how many files each holds. Finish with
+one sentence on what this subtree is for overall."""

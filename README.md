@@ -122,6 +122,9 @@ The docs and the landing at [opencrabs.com](https://opencrabs.com) are available
 ### Cron Templates
 - [Cron Jobs Guide](src/docs/reference/templates/cron/README.md)
 
+### Command Templates (opt-in, LLM-flavored)
+- [Commands Guide](src/docs/reference/templates/commands/README.md): copy-paste `commands.toml` fragments that call the LLM. The mechanical, zero-cost commands (`/architecture`, `/attach`) are built in and need no install.
+
 ---
 
 ## Why OpenCrabs?
@@ -452,7 +455,7 @@ silence_group_start = true       # Silently ignore /start from non-allowed users
 
 Every channel has a `bot_owner` field (`[channels.telegram]`, `[channels.discord]`, `[channels.slack]`, `[channels.whatsapp]`, `[channels.trello]`). It names the user ID(s) (phone for WhatsApp) treated as the bot owner. On first-run setup the owner is seeded automatically from the first entry in your allow list (`allowed_users`, or `allowed_phones` for WhatsApp), and existing configs are migrated on load. Set `bot_owner` explicitly to pin the owner instead of relying on list order.
 
-The owner gets access that other allowlisted users do not. All channel commands except `/new` are owner-only: `/compact`, `/clear`, `/doctor`, `/evolve`, `/help`, `/models`, `/rtk`, `/sessions`, `/stop`, `/usage`, `/profiles`, `/goal`, `/mission-control`, `/rename`, `/cd`, `/respond_to`, `/redact`, `/restart`, `/exit`. `/new` stays open for session recovery (bugged/hallucinated sessions). Non-owners who try get a short "owner only" notice.
+The owner gets access that other allowlisted users do not. All channel commands except `/new` are owner-only: `/compact`, `/clear`, `/doctor`, `/evolve`, `/help`, `/models`, `/rtk`, `/sessions`, `/stop`, `/usage`, `/profiles`, `/goal`, `/mission-control`, `/rename`, `/cd`, `/respond_to`, `/redact`, `/restart`, `/exit`, `/architecture`, `/attach`. `/new` stays open for session recovery (bugged/hallucinated sessions). Non-owners who try get a short "owner only" notice.
 
 **Deny-by-default access model (all channels):** if neither `allowed_users` (nor `allowed_phones`/`allowed_roles`) nor `bot_owner` is configured, the bot refuses all interactions — unconfigured installs are locked down by default on Telegram, Discord, Slack, and WhatsApp alike. Set at least one to unlock access. This prevents open-mode footguns on fresh deployments.
 
@@ -586,6 +589,7 @@ This solves the core UX problem in mention-only groups: previously, tagging the 
 | **Browser Automation** | Native browser control via CDP (Chrome DevTools Protocol). Auto-detects your default Chromium-based browser (Chrome, Brave, Edge, Arc, Vivaldi, Opera, Chromium) and uses its profile — your logins, cookies, and extensions carry over. 9 browser tools: navigate, click, type, screenshot, eval JS, extract content, wait for elements, find/inventory elements, batched multi-action. Headed or headless mode with display auto-detection. **Shadow DOM aware:** CSS/text/aria search, the interactive inventory, and click/type/act/wait/screenshot all resolve inside open shadow roots, and closed roots still resolve over CDP. **Note:** Firefox is not supported (no CDP) — if Firefox is your default, OpenCrabs falls back to the first available Chromium browser. Feature-gated under `browser` (included by default) |
 | **ACP Server Mode** | Agent Client Protocol server over stdio JSON-RPC (#1540): editors and agent harnesses like Zed and monocle drive OpenCrabs as their coding agent. `opencrabs acp` serves the session over stdio; prompts, tool calls and streaming updates ride the ACP session protocol |
 | **Natural Language Commands** | Tell OpenCrabs to create slash commands — it writes them to `commands.toml` autonomously via the `config_manager` tool |
+| **Mechanical Commands (#933)** | `/architecture [path]` (directory tree, depth-capped, secrets/vendor dirs excluded), `/attach <paths...>` (docs-only file attach: `.md` or `docs/` files, hidden paths and secret files refused in compiled code). Both run in the binary with zero API cost; the LLM-flavored `/architecture-explain` lives as an opt-in template in `src/docs/reference/templates/commands/` |
 | **Live Settings** | Agent can read/write `config.toml` at runtime; Settings TUI screen (press `S`) shows current config; approval policy persists across restarts. Default: auto-approve (use `/approve` to change) |
 | **Web Search** | DuckDuckGo (built-in, no key needed) + EXA AI (neural, free via MCP) by default; Brave Search optional (key in `keys.toml`) |
 | **Debug Logging** | `--debug` flag or `debug_logs = true` in config enables file logging; config toggle hot-reloads live without restart; `DEBUG_LOGS_LOCATION` env var for custom log directory |
