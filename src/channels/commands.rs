@@ -244,6 +244,10 @@ pub enum ChannelCommand {
     Rename(String),
     /// `/cd [path]` — directory browser (inline keyboard)
     ChangeDir(DirBrowserResponse),
+    /// `/architecture [path]` — mechanical directory tree, no LLM (#933)
+    Architecture(Option<String>),
+    /// `/attach <paths...>` — mechanical file attach, no LLM (#933)
+    Attach(String),
     /// `/profiles` — profile manager (inline keyboard)
     Profiles(ProfilesResponse),
     /// `/respond_to [all|mention|auto]` — show/switch auto-mention mode (#244)
@@ -590,6 +594,34 @@ pub async fn handle_command(
                 )
             }
         }
+        cmd if cmd == "/architecture" || cmd.starts_with("/architecture ") => {
+            // Owner-only: /architecture exposes the host filesystem layout,
+            // the same class of surface as /cd (#933).
+            if !is_owner {
+                ChannelCommand::UnknownCommand(
+                    "🔒 `/architecture` is restricted to the bot owner.".to_string(),
+                )
+            } else {
+                let path_arg = cmd.strip_prefix("/architecture").unwrap_or("").trim();
+                ChannelCommand::Architecture(if path_arg.is_empty() {
+                    None
+                } else {
+                    Some(path_arg.to_string())
+                })
+            }
+        }
+        cmd if cmd == "/attach" || cmd.starts_with("/attach ") => {
+            // Owner-only: /attach pulls server-side files toward the model's
+            // reach, the same trust class as /cd and /architecture (#933).
+            if !is_owner {
+                ChannelCommand::UnknownCommand(
+                    "🔒 `/attach` is restricted to the bot owner.".to_string(),
+                )
+            } else {
+                let args = cmd.strip_prefix("/attach").unwrap_or("").trim();
+                ChannelCommand::Attach(run_attach_channel(args, session_id, agent).await)
+            }
+        }
         "/profiles" => {
             if !is_owner {
                 ChannelCommand::UnknownCommand("🔒 Owner-only command.".to_string())
@@ -711,6 +743,8 @@ pub async fn handle_command(
         ChannelCommand::Stop => Some("Operation stopped.".to_string()),
         ChannelCommand::UserSystem(body) => Some(body.clone()),
         ChannelCommand::Doctor => Some("Running health check...".to_string()),
+        ChannelCommand::Architecture(_) => Some("Building directory tree...".to_string()),
+        ChannelCommand::Attach(body) => Some(body.clone()),
         ChannelCommand::Evolve => Some("Checking for updates...".to_string()),
         ChannelCommand::Rtk(body) => Some(body.clone()),
         ChannelCommand::ModelSwitched(body) => Some(body.clone()),
@@ -892,6 +926,14 @@ pub(crate) fn format_help() -> String {
             "Switch between sessions (`/sessions:<query>` to filter)",
         ),
         ("/stop", "Abort current operation"),
+        (
+            "/architecture",
+            "Directory tree of a path (mechanical, no API cost)",
+        ),
+        (
+            "/attach",
+            "Attach docs file(s) to the session (.md or docs/; mechanical, no API cost)",
+        ),
         (
             "/clear",
             "Clear context here at no cost; history and title stay",
@@ -2399,6 +2441,145 @@ pub fn run_doctor() -> String {
     SlashCommandTool::doctor_text()
 }
 
+/// Build the mechanical `/architecture` tree (no LLM, zero per-use cost,
+/// #933). Returns ready-to-send text in both the Ok and Err cases.
+pub fn run_architecture(path: Option<&str>) -> String {
+    match crate::utils::tree_view::architecture_tree(path) {
+        Ok(text) => text,
+        Err(e) => e,
+    }
+}
+
+/// Per-path verdict for `/attach` (#933): mechanical, no LLM.
+pub(crate) enum AttachVerdict {
+    Ok,
+    Directory,
+    NotFound,
+    Confidential(&'static str),
+    /// Any path component is dot-hidden; #933 hides them from both surfaces.
+    Hidden,
+    /// Not `.md` and not under a `docs/` directory; the #933 docs-only
+    /// allowlist keeps arbitrary files out of the chat log.
+    NotDocs,
+}
+
+/// Classify one `/attach` path candidate: pure fs checks plus the compiled
+/// confidential denylist (`is_confidential`), so keys, SSH material and env
+/// files are refused in code, not by prompt text. Hidden dotfiles and the
+/// docs-only allowlist are enforced here too (#933 hard requirements). No
+/// agent involvement.
+pub(crate) fn validate_attach_path(raw: &str) -> AttachVerdict {
+    let path = std::path::Path::new(raw);
+    if !path.exists() {
+        return AttachVerdict::NotFound;
+    }
+    if let Some(reason) = crate::brain::tools::confidential::is_confidential(path) {
+        return AttachVerdict::Confidential(reason);
+    }
+    if path.is_dir() {
+        return AttachVerdict::Directory;
+    }
+    if is_hidden_path(path) {
+        return AttachVerdict::Hidden;
+    }
+    if !is_docs_path(path) {
+        return AttachVerdict::NotDocs;
+    }
+    AttachVerdict::Ok
+}
+
+/// Component strings of `path`, skipping structural components (`/`, `.`)
+/// so a leading `./src/x.md` is not mistaken for a hidden path (#933).
+fn path_components(path: &std::path::Path) -> impl Iterator<Item = String> {
+    path.components().filter_map(|c| match c {
+        std::path::Component::Normal(part) => Some(part.to_string_lossy().into_owned()),
+        _ => None,
+    })
+}
+
+/// The hidden gate from #933: refuse dotFILES (`.env`, `.hidden.md`) and any
+/// `..` traversal. Ancestor directory names do not count, so macOS temp dirs
+/// (`.tmpXXXX`) and legitimate dot-directories (`.github/SECURITY.md`) pass;
+/// secrets inside them are still caught first by the confidential gate.
+fn is_hidden_path(path: &std::path::Path) -> bool {
+    if path
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return true;
+    }
+    path.file_name()
+        .is_some_and(|n| n.to_string_lossy().starts_with('.'))
+}
+
+/// The docs-only allowlist from #933: `.md` files (case-insensitive) or any
+/// file under a `docs` directory (case-insensitive).
+fn is_docs_path(path: &std::path::Path) -> bool {
+    let md = path
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("md"));
+    let under_docs = path_components(path).any(|c| c.eq_ignore_ascii_case("docs"));
+    md || under_docs
+}
+
+/// Classify every whitespace-separated path in an `/attach` invocation and
+/// build the per-path status lines. Returns `(status lines, attached paths)`.
+/// Pure fs + denylist: no agent involvement, so tests can pin all verdicts
+/// without a service harness (#933).
+pub(crate) fn attach_status_lines(args: &str) -> (Vec<String>, Vec<String>) {
+    let mut lines = Vec::new();
+    let mut attached = Vec::new();
+    for raw in args.split_whitespace() {
+        match validate_attach_path(raw) {
+            AttachVerdict::Ok => {
+                attached.push(raw.to_string());
+                lines.push(format!("📎 {raw}: attached"));
+            }
+            AttachVerdict::Directory => lines.push(format!(
+                "📁 {raw}: is a directory (try /architecture {raw})"
+            )),
+            AttachVerdict::NotFound => lines.push(format!("❓ {raw}: no such path")),
+            AttachVerdict::Confidential(reason) => {
+                lines.push(format!("🔒 {raw}: refused ({reason})"))
+            }
+            AttachVerdict::Hidden => {
+                lines.push(format!("🙈 {raw}: hidden paths are not surfaced"))
+            }
+            AttachVerdict::NotDocs => lines.push(format!(
+                "📄 {raw}: docs-only (.md or under a docs/ directory); use file upload for other types"
+            )),
+        }
+    }
+    (lines, attached)
+}
+
+/// Execute `/attach` on a channel (no LLM, #933): validate each path, persist
+/// one system message carrying a `[User attached file: <path>]` marker per
+/// attached file (the marker reaches the model via normal history recall on
+/// the next turn), and return the per-path status reply.
+pub async fn run_attach_channel(args: &str, session_id: Uuid, agent: &AgentService) -> String {
+    if args.is_empty() {
+        return "attach: usage /attach <path> [more paths...]".to_string();
+    }
+    let (mut lines, attached) = attach_status_lines(args);
+    if !attached.is_empty() {
+        let content = attached
+            .iter()
+            .map(|p| format!("[User attached file: {p}]"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let msg_svc = crate::services::MessageService::new(agent.context().clone());
+        if let Err(e) = msg_svc
+            .create_message(session_id, "system".to_string(), content)
+            .await
+        {
+            tracing::warn!("/attach: failed to persist attachment marker: {e}");
+            lines.push("⚠️ could not record the attachment in session history".to_string());
+        }
+    }
+    lines.join("\n")
+}
+
 /// Try to execute a command that returns a simple text response (no platform-specific UI).
 /// Returns `Some(text)` for commands handled here, `None` for commands that need
 /// platform-specific rendering (Models, Sessions, NewSession) or agent passthrough.
@@ -2411,6 +2592,8 @@ pub async fn try_execute_text_command(cmd: &ChannelCommand) -> Option<String> {
         | ChannelCommand::UserSystem(body)
         | ChannelCommand::Rtk(body) => Some(body.clone()),
         ChannelCommand::Doctor => Some(run_doctor()),
+        ChannelCommand::Architecture(path) => Some(run_architecture(path.as_deref())),
+        ChannelCommand::Attach(body) => Some(body.clone()),
         ChannelCommand::Evolve => Some(run_evolve().await),
         ChannelCommand::Restart => Some(schedule_restart()),
         ChannelCommand::Exit => Some(schedule_exit()),
