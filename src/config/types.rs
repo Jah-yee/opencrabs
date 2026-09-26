@@ -105,6 +105,31 @@ pub struct Config {
     /// Optional — defaults preserve current (crab-dark) rendering.
     #[serde(default)]
     pub tui: TuiConfig,
+
+    /// Runtime feature flags (#1705): opt-in capabilities that default
+    /// OFF so per-use cost and storage only appear when the operator
+    /// asks for them. Empty section = everything off.
+    #[serde(default)]
+    pub features: FeaturesConfig,
+}
+
+/// Opt-in runtime feature flags (#1705).
+///
+/// ```toml
+/// [features]
+/// audit_recording = true   # write turn_retrievals + turn_outcomes for /audit
+/// ```
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct FeaturesConfig {
+    /// Audit recording (#1705): persist one `turn_retrievals` row per
+    /// read-class tool call (read/search/list) and one `turn_outcomes` row
+    /// per turn with the mechanically-observed verdict. Default off: with
+    /// the flag unset the tables stay empty and `/audit` renders the
+    /// pre-existing ACTION data only. Resolved once at agent construction
+    /// (same policy as `[agent] lazy_tools`), so a change needs a restart
+    /// or config reload.
+    #[serde(default)]
+    pub audit_recording: bool,
 }
 
 /// TUI (terminal UI) configuration.
@@ -3022,6 +3047,7 @@ impl Default for Config {
             brain: BrainConfig::default(),
             browser: BrowserConfig::default(),
             doctor: DoctorConfig::default(),
+            features: FeaturesConfig::default(),
         }
     }
 }

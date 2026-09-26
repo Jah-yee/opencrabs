@@ -1012,6 +1012,7 @@ pub mod tui_render_panes_test;
 pub mod tui_tool_stack_test;
 pub mod turn_duration_test;
 pub mod turn_ranges_test;
+pub mod turn_retrieval_recording_test;
 pub mod voice_chain_test;
 pub mod voice_config_derivation_test;
 pub mod voice_flag_flips_test;

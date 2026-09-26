@@ -248,6 +248,9 @@ pub enum ChannelCommand {
     Architecture(Option<String>),
     /// `/attach <paths...>` — mechanical file attach, no LLM (#933)
     Attach(String),
+    /// `/audit [N]` — mechanical audit viewer: ACTION rows always, READ +
+    /// OUTCOME when `[features] audit_recording` is on (#1705)
+    Audit(String),
     /// `/profiles` — profile manager (inline keyboard)
     Profiles(ProfilesResponse),
     /// `/respond_to [all|mention|auto]` — show/switch auto-mention mode (#244)
@@ -622,6 +625,23 @@ pub async fn handle_command(
                 ChannelCommand::Attach(run_attach_channel(args, session_id, agent).await)
             }
         }
+        cmd if cmd == "/audit" || cmd.starts_with("/audit ") => {
+            // Owner-only (#1705): audit rows carry session ids, tool targets
+            // (file paths, queries) and turn verdicts — the same trust class
+            // as /usage breakdowns, not for arbitrary channel members.
+            if !is_owner {
+                ChannelCommand::UnknownCommand(
+                    "🔒 `/audit` is restricted to the bot owner.".to_string(),
+                )
+            } else {
+                let args = cmd.strip_prefix("/audit").unwrap_or("").trim();
+                let n = args
+                    .split_whitespace()
+                    .next()
+                    .and_then(|a| a.parse::<u32>().ok());
+                ChannelCommand::Audit(run_audit_channel(n, agent).await)
+            }
+        }
         "/profiles" => {
             if !is_owner {
                 ChannelCommand::UnknownCommand("🔒 Owner-only command.".to_string())
@@ -745,6 +765,7 @@ pub async fn handle_command(
         ChannelCommand::Doctor => Some("Running health check...".to_string()),
         ChannelCommand::Architecture(_) => Some("Building directory tree...".to_string()),
         ChannelCommand::Attach(body) => Some(body.clone()),
+        ChannelCommand::Audit(body) => Some(body.clone()),
         ChannelCommand::Evolve => Some("Checking for updates...".to_string()),
         ChannelCommand::Rtk(body) => Some(body.clone()),
         ChannelCommand::ModelSwitched(body) => Some(body.clone()),
@@ -933,6 +954,10 @@ pub(crate) fn format_help() -> String {
         (
             "/attach",
             "Attach docs file(s) to the session (.md or docs/; mechanical, no API cost)",
+        ),
+        (
+            "/audit",
+            "Audit trail viewer: ACTION + READ + OUTCOME rows (mechanical, no API cost)",
         ),
         (
             "/clear",
@@ -2580,6 +2605,66 @@ pub async fn run_attach_channel(args: &str, session_id: Uuid, agent: &AgentServi
     lines.join("\n")
 }
 
+/// Render the `/audit` viewer (#1705): the last N ACTION rows
+/// (`tool_executions`, always present) joined with the READ count / newest
+/// retrieval and the mechanical OUTCOME verdict when recording is on.
+/// Mechanical only: one SQL query + text render, no LLM call.
+pub async fn run_audit_channel(n: Option<u32>, agent: &AgentService) -> String {
+    let limit = n.unwrap_or(10).clamp(1, 100);
+    let Some(pool) = crate::db::global_pool() else {
+        return "audit: no database pool available".to_string();
+    };
+    let repo = crate::db::repository::TurnRetrievalRepository::new(pool.clone());
+    let rows = match repo.recent_audit_rows(limit).await {
+        Ok(rows) => rows,
+        Err(e) => return format!("audit: failed to load: {e}"),
+    };
+    if rows.is_empty() {
+        return "audit: no tool actions recorded yet".to_string();
+    }
+    render_audit_rows(&rows, agent.audit_recording_enabled())
+}
+
+/// Pure renderer behind `/audit`, split from the DB load so tests can pin
+/// both render modes (recording on/off) without a pool (#1705).
+pub(crate) fn render_audit_rows(
+    rows: &[crate::db::repository::turn_retrieval::AuditRow],
+    recording: bool,
+) -> String {
+    let mut out = String::new();
+    if recording {
+        out.push_str(&format!(
+            "audit: last {} action(s), READ+OUTCOME recorded\n",
+            rows.len()
+        ));
+    } else {
+        out.push_str(&format!(
+            "audit: last {} action(s) (ACTION only; enable [features] audit_recording for READ+OUTCOME)\n",
+            rows.len()
+        ));
+    }
+    out.push_str("TURN|ACTION|READ|OUTCOME\n");
+    for r in rows {
+        let turn = r.message_id.chars().take(8).collect::<String>();
+        let action = if r.status == "success" {
+            r.tool_name.clone()
+        } else {
+            format!("{} (err)", r.tool_name)
+        };
+        let read = if r.read_count > 0 {
+            match &r.last_read {
+                Some(last) => format!("{}: {last}", r.read_count),
+                None => r.read_count.to_string(),
+            }
+        } else {
+            "-".to_string()
+        };
+        let outcome = r.outcome.clone().unwrap_or_else(|| "-".to_string());
+        out.push_str(&format!("{turn}|{action}|{read}|{outcome}\n"));
+    }
+    out.trim_end().to_string()
+}
+
 /// Try to execute a command that returns a simple text response (no platform-specific UI).
 /// Returns `Some(text)` for commands handled here, `None` for commands that need
 /// platform-specific rendering (Models, Sessions, NewSession) or agent passthrough.
@@ -2594,6 +2679,7 @@ pub async fn try_execute_text_command(cmd: &ChannelCommand) -> Option<String> {
         ChannelCommand::Doctor => Some(run_doctor()),
         ChannelCommand::Architecture(path) => Some(run_architecture(path.as_deref())),
         ChannelCommand::Attach(body) => Some(body.clone()),
+        ChannelCommand::Audit(body) => Some(body.clone()),
         ChannelCommand::Evolve => Some(run_evolve().await),
         ChannelCommand::Restart => Some(schedule_restart()),
         ChannelCommand::Exit => Some(schedule_exit()),

@@ -1230,6 +1230,19 @@ impl App {
                 self.push_system_message(lines.join("\n"));
                 true
             }
+            s if s == "/audit" || s.starts_with("/audit ") => {
+                // Mechanical audit viewer (#1705): the same renderer the
+                // channels use, straight into the transcript. No LLM calls.
+                let args = input.strip_prefix("/audit").unwrap_or("").trim();
+                let n = args
+                    .split_whitespace()
+                    .next()
+                    .and_then(|a| a.parse::<u32>().ok());
+                let reply =
+                    crate::channels::commands::run_audit_channel(n, &self.agent_service).await;
+                self.push_system_message(reply);
+                true
+            }
             "/rebuild" => {
                 // Run the build DETACHED via the shared BackgroundTaskManager
                 // (#1748): live timer and status file come free, and the

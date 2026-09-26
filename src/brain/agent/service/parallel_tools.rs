@@ -278,6 +278,49 @@ impl super::AgentService {
                         tracing::error!("[TOOL_EXEC] Failed to record tool execution: {}", e);
                     }
                 });
+
+                // Audit READ row (#1705), parallel twin of the sequential
+                // site: same flag gate + read-class filter BEFORE any repo
+                // work, so an off flag costs a bool check per call.
+                if self.audit_recording
+                    && let Some(kind) =
+                        crate::db::repository::turn_retrieval::retrieval_kind(&o.tool_name)
+                {
+                    let repo = crate::db::repository::TurnRetrievalRepository::new(pool.clone());
+                    let rid = Uuid::new_v4().to_string();
+                    let sid = session_id.to_string();
+                    let mid = assistant_msg_id.to_string();
+                    let tname = o.tool_name.clone();
+                    let target = crate::db::repository::turn_retrieval::audit_target(
+                        &o.tool_name,
+                        &o.tool_input,
+                    )
+                    .unwrap_or_else(|| "unknown".to_string());
+                    let hash = {
+                        use sha2::{Digest, Sha256};
+                        let mut h = Sha256::new();
+                        h.update(o.content.as_bytes());
+                        format!("{:x}", h.finalize())
+                    };
+                    let preview: String = o.content.chars().take(128).collect();
+                    tokio::spawn(async move {
+                        if let Err(e) = repo
+                            .record_retrieval(
+                                &rid,
+                                &sid,
+                                &mid,
+                                &tname,
+                                kind,
+                                &target,
+                                Some(&hash),
+                                Some(&preview),
+                            )
+                            .await
+                        {
+                            tracing::error!("[AUDIT] Failed to record turn retrieval: {e}");
+                        }
+                    });
+                }
             }
             let output_summary: String = strip_ansi_output(&o.content).chars().take(2000).collect();
             out.outputs.push((o.success, output_summary));

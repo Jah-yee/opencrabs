@@ -172,6 +172,7 @@ fn variant_name(cmd: &ChannelCommand) -> &'static str {
         ChannelCommand::ChangeDir(_) => "ChangeDir",
         ChannelCommand::Architecture(_) => "Architecture",
         ChannelCommand::Attach(_) => "Attach",
+        ChannelCommand::Audit(_) => "Audit",
         ChannelCommand::Profiles(_) => "Profiles",
         ChannelCommand::RespondTo(_) => "RespondTo",
         ChannelCommand::Redact(_) => "Redact",
