@@ -63,6 +63,7 @@ pub(super) fn render_help(f: &mut Frame, app: &mut App, area: Rect) {
         kv("Ctrl+N", "New session", cyan),
         kv("Ctrl+L", "List sessions", cyan),
         kv("Ctrl+K", "Clear session", cyan),
+        kv("Mouse click", "Open URL/path under click", cyan),
         Line::from(""),
         section_header("CHAT"),
         kv("Enter", "Send message", cyan),

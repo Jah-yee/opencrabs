@@ -452,6 +452,12 @@ impl App {
         // If this was a plain click (no drag motion), treat it as a click-select.
         let Some(anchor) = self.drag_anchor.take() else {
             self.drag_current = None;
+            // Click-to-open (#1772): a token under the cursor resolving to a
+            // URL or an existing path launches and consumes the click.
+            // Anywhere else keeps the existing fold/select semantics.
+            if self.try_open_clicked(col, row) {
+                return;
+            }
             self.handle_click_select(row);
             return;
         };
@@ -466,6 +472,54 @@ impl App {
             self.notification = Some("Copied to clipboard".to_string());
             self.notification_shown_at = Some(std::time::Instant::now());
         }
+    }
+
+    /// Screen coordinates → rendered line under the cursor → clickable token
+    /// → launch. Returns true when the click opened something (or copied the
+    /// path after a failed launch), consuming it. Coordinate math mirrors
+    /// `extract_drag_selection`: `Padding(1,1,1,0)` puts the first text row at
+    /// `chat_area_y + 1` and content one cell past `chat_area_x`.
+    fn try_open_clicked(&mut self, col: u16, row: u16) -> bool {
+        let chat_height = self.chat_area_height as usize;
+        if chat_height == 0 {
+            return false;
+        }
+        let top_pad = 1u16;
+        let Some(row_in_chat) = row.checked_sub(self.chat_area_y + top_pad) else {
+            return false;
+        };
+        let row_in_chat = row_in_chat as usize;
+        if row_in_chat >= chat_height.saturating_sub(top_pad as usize) {
+            return false;
+        }
+        let line_idx = self.chat_render_scroll + row_in_chat;
+        let Some(line) = self.chat_rendered_lines.get(line_idx) else {
+            return false;
+        };
+        let content_left = self.chat_area_x + 1;
+        let col_in_line = col.saturating_sub(content_left) as usize;
+        let Some(target) = super::clickable::target_at(line, col_in_line) else {
+            return false;
+        };
+        match super::clickable::open(&target) {
+            Ok(()) => {
+                self.notification = Some(format!("Opened {}", target.label()));
+                self.notification_shown_at = Some(std::time::Instant::now());
+            }
+            // No launcher on this box (or it refused): the token was still
+            // the click's intent, so copy it instead of a dead end — same
+            // fallback the session-files overlay uses.
+            Err(_) => {
+                let copied = Self::copy_to_clipboard(&target.label());
+                self.notification = Some(if copied {
+                    format!("Copied {} (no launcher available)", target.label())
+                } else {
+                    format!("Could not open {}", target.label())
+                });
+                self.notification_shown_at = Some(std::time::Instant::now());
+            }
+        }
+        true
     }
 
     /// Turn a pair of terminal-screen coordinates into the plain-text that was
