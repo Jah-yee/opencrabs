@@ -254,6 +254,7 @@ pub mod cron_test;
 pub mod cron_tool_registry_test;
 pub mod cron_trigger_pipeline_test;
 pub mod cross_provider_model_leak_guard_test;
+pub mod ctrl_c_snap_docs_test;
 pub mod custom_model_paste_test;
 pub mod custom_provider_cache_autoenable_test;
 pub mod custom_provider_key_fetch_test;

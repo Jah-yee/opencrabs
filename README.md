@@ -3775,7 +3775,7 @@ Any tool on your `$PATH` works. If it runs in your terminal, OpenCrabs can use i
 
 | Shortcut | Action |
 |----------|--------|
-| `Ctrl+C` | First press clears input, second press (within 3s) quits |
+| `Ctrl+C` | First press: snaps to bottom if scrolled up, else clears input. Second press (within 3s) quits |
 | `Ctrl+N` | New session |
 | `Ctrl+L` | List/switch sessions |
 | `Ctrl+K` | Clear current session |
