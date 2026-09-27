@@ -23,7 +23,10 @@
 
 use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+// `Instant` paces the flock wait loop below, which is unix-only.
+#[cfg(unix)]
+use std::time::Instant;
 
 /// How long to wait for another writer before going ahead regardless. Long
 /// enough to serialise two agents saving the same file, short enough that a

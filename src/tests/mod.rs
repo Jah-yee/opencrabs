@@ -689,6 +689,8 @@ pub mod tui_attachment_router_test;
 pub mod tui_cancel_indicator_test;
 pub mod tui_cd_arg_test;
 pub mod tui_components_logo_test;
+// Unix-only alongside the editor module it exercises (#1755).
+#[cfg(unix)]
 pub mod tui_editor_handoff_test;
 pub mod tui_events_test;
 pub mod tui_highlight_test;

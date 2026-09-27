@@ -801,6 +801,9 @@ impl App {
     // platform being compiled it reads as the tail, hence the allow.
     #[allow(clippy::needless_return)]
     fn read_clipboard_image() -> Option<Vec<u8>> {
+        // Both clipboard backends below are macOS/Linux; the import is
+        // unused (and warned) on Windows otherwise.
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
         use std::process::{Command, Stdio};
 
         // macOS: pbpaste is text-only, so dump the clipboard PNG to a scratch
@@ -933,6 +936,7 @@ impl App {
     // platform being compiled it reads as the tail, hence the allow.
     #[allow(clippy::needless_return)]
     fn read_clipboard_text() -> Option<String> {
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
         use std::process::{Command, Stdio};
 
         #[cfg(target_os = "macos")]
@@ -1770,7 +1774,9 @@ impl App {
                     // Editor handoff (#1744): vi/vim/nano/emacs need the real
                     // tty — pipe-capturing them dumps escape sequences into
                     // the chat. Park the request; the runner loop performs
-                    // the terminal handoff before its next draw.
+                    // the terminal handoff before its next draw. Unix only
+                    // (#1755): Windows keeps the pipe path below.
+                    #[cfg(unix)]
                     if crate::tui::editor::handoff_target(&shell_cmd).is_some() {
                         self.pending_editor_handoff = Some((shell_cmd, origin_session));
                         self.input_buffer.clear();
