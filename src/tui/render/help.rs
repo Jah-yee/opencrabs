@@ -59,7 +59,7 @@ pub(super) fn render_help(f: &mut Frame, app: &mut App, area: Rect) {
         kv("Model", &model_name, cyan),
         Line::from(""),
         section_header("GLOBAL"),
-        kv("Ctrl+C", "Clear input / quit (2x)", cyan),
+        kv("Ctrl+C", "Snap bottom / clear, quit (2x)", cyan),
         kv("Ctrl+N", "New session", cyan),
         kv("Ctrl+L", "List sessions", cyan),
         kv("Ctrl+K", "Clear session", cyan),
