@@ -125,6 +125,18 @@ pub(crate) fn is_global_cooldown_active() -> bool {
     }
 }
 
+/// Whether a cosmetic reaction ack may hit the API right now (#1778).
+///
+/// Ack reactions (the "👀" seen-marker) are pure cosmetics: during a global
+/// 429 cooldown the API rejects the call with `Retry after` and every
+/// rejected call risks extending the flood ban. They drop here exactly like
+/// cosmetic typing refreshes drop in `admit_chat_action`; the final response
+/// the ack was advertising is delivered regardless, so the only loss is the
+/// transient reaction, never the message flow.
+pub(crate) fn reaction_ack_permitted() -> bool {
+    !is_global_cooldown_active()
+}
+
 /// Await any active global 429 cooldown, sleeping until the deadline expires.
 ///
 /// Returns the duration waited (if any).
