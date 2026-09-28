@@ -20,9 +20,10 @@
 
 mod archive;
 mod binary_health;
+pub(crate) mod bounded_child;
 pub(crate) mod homebrew;
 pub(crate) mod release_check;
-mod restart_status;
+pub(crate) mod restart_status;
 pub(crate) mod systemd;
 mod tool;
 pub(crate) mod verify;

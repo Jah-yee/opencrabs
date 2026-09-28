@@ -9,7 +9,7 @@ use super::systemd::SYSTEMD_UNIT_PATTERN;
 /// no restart was actually scheduled (the original #136 symptom — we
 /// must not reintroduce it for a new reason).
 #[derive(Debug)]
-pub(super) enum RestartStatus {
+pub(crate) enum RestartStatus {
     /// Not running on a systemd host (no `/run/systemd/system`). The
     /// caller's `RestartReady` progress event is the only restart
     /// signal — e.g. cargo-install / TUI launch paths handle that.
@@ -27,17 +27,22 @@ pub(super) enum RestartStatus {
 }
 
 impl RestartStatus {
-    pub(super) fn user_message(&self, current: &str, latest: &str) -> String {
+    /// The restart half of the success line, with no version claim in it.
+    ///
+    /// Split out of [`Self::user_message`] so a caller that cannot state the new
+    /// version with certainty still reuses the restart guidance rather than
+    /// writing a second copy of it. Homebrew is that caller: brew owns the
+    /// version, and the only honest statement is whatever brew reports after the
+    /// upgrade (#1779). Empty for [`RestartStatus::Scheduled`], where the timer
+    /// handles the restart and the version sentence is the whole message.
+    pub(super) fn restart_clause(&self) -> String {
         match self {
-            RestartStatus::Scheduled => {
-                format!("Evolved from v{current} to v{latest}.")
-            }
-            RestartStatus::NotSystemd => format!(
-                "Evolved from v{current} to v{latest}. Binary updated on disk; restart \
+            RestartStatus::Scheduled => String::new(),
+            RestartStatus::NotSystemd => "Binary updated on disk; restart \
                  the process / relaunch to load the new version."
-            ),
+                .to_string(),
             RestartStatus::NoUnitsMatched => format!(
-                "Evolved from v{current} to v{latest}. Binary updated on disk, but no \
+                "Binary updated on disk, but no \
                  systemd units matched `{SYSTEMD_UNIT_PATTERN}` at system or user level \
                  — your daemon (if any) was not restarted. Restart it manually with \
                  `systemctl --user restart {SYSTEMD_UNIT_PATTERN}` (if installed as a \
@@ -45,12 +50,21 @@ impl RestartStatus {
                  or relaunch if running standalone."
             ),
             RestartStatus::SpawnFailed(err) => format!(
-                "Evolved from v{current} to v{latest}. Binary updated on disk, but \
+                "Binary updated on disk, but \
                  scheduling the systemd restart failed ({err}). Restart your daemon \
                  manually with `systemctl --user restart {SYSTEMD_UNIT_PATTERN}` \
                  (if a user service) or `systemctl restart {SYSTEMD_UNIT_PATTERN}` \
                  (if a system service)."
             ),
+        }
+    }
+
+    pub(super) fn user_message(&self, current: &str, latest: &str) -> String {
+        let clause = self.restart_clause();
+        if clause.is_empty() {
+            format!("Evolved from v{current} to v{latest}.")
+        } else {
+            format!("Evolved from v{current} to v{latest}. {clause}")
         }
     }
 }

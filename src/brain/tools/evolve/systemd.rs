@@ -4,6 +4,12 @@
 //! builders with no dependency on the tool or its strategies, and pinning
 //! their arg lists in tests is the whole point — silent drift in any flag
 //! re-introduces the "Evolved! but the daemon never restarted" symptom.
+//!
+//! Also holds [`schedule_restart`], the pre-flight-and-arm sequence, since
+//! that is the only consumer of the builders and it belongs with them rather
+//! than inside one strategy file. It was added for the Homebrew branch (#1779),
+//! which previously armed no backstop at all and relied on the in-process
+//! `exec()` alone.
 
 /// Service-unit glob used by the systemd restart path. Matches every
 /// profile (default, ops, staging, ...) sharing the same binary.
@@ -107,4 +113,95 @@ pub(crate) fn count_matching_systemd_units(pattern: &str, user: bool) -> Option<
     }
     let stdout = String::from_utf8_lossy(&output.stdout);
     Some(stdout.lines().filter(|l| !l.trim().is_empty()).count())
+}
+/// Which unit bus an evolve restart should target, or `None` when nothing
+/// matched at either level.
+///
+/// `Some(false)` = the system bus, `Some(true)` = the user bus. The user-bus
+/// fallback is the substance of #162: OpenCrabs installed as a user service
+/// (`install_systemd_service()` writes to `~/.config/systemd/user/`) has zero
+/// system-level units, and checking only the system bus is what produced the
+/// "Evolved! but the daemon never restarted" line of reports (#136).
+///
+/// A `None` unit count from [`count_matching_systemd_units`] means "could not
+/// tell", systemctl failed to spawn, not "zero units". That case returns
+/// `Some(false)` and logs: a diagnostic failure must not withhold a restart from
+/// a user whose daemon does exist. Only a confirmed zero on both buses returns
+/// `None`, so the caller skips scheduling instead of quietly no-op'ing.
+///
+/// Both evolve branches (binary download, Homebrew) pre-flight through here so
+/// the bus rules cannot drift apart.
+pub(crate) fn select_unit_bus(sid: uuid::Uuid) -> Option<bool> {
+    match count_matching_systemd_units(SYSTEMD_UNIT_PATTERN, false) {
+        Some(0) => {}
+        Some(n) => {
+            tracing::info!(
+                target: "evolve",
+                pattern = SYSTEMD_UNIT_PATTERN,
+                matched_units = n,
+                use_user_units = false,
+                session_id = %sid,
+                "evolve: pre-flight found {n} system-level units, scheduling restart (+3s)"
+            );
+            return Some(false);
+        }
+        None => {
+            tracing::warn!(
+                target: "evolve",
+                pattern = SYSTEMD_UNIT_PATTERN,
+                session_id = %sid,
+                "evolve: could not count system-level units (systemctl spawn failed), \
+                 scheduling restart anyway"
+            );
+            return Some(false);
+        }
+    }
+
+    match count_matching_systemd_units(SYSTEMD_UNIT_PATTERN, true) {
+        Some(n) if n > 0 => {
+            tracing::info!(
+                target: "evolve",
+                pattern = SYSTEMD_UNIT_PATTERN,
+                user_units = n,
+                session_id = %sid,
+                "evolve: no system-level units found, using {n} user-level units, \
+                 scheduling restart with --user"
+            );
+            return Some(true);
+        }
+        _ => {}
+    }
+
+    tracing::warn!(
+        target: "evolve",
+        pattern = SYSTEMD_UNIT_PATTERN,
+        session_id = %sid,
+        "evolve: no systemd units matched the pattern (checked system and user level), \
+         skipping scheduled restart"
+    );
+    None
+}
+
+/// Sweep spent transient evolve units before scheduling a fresh one.
+///
+/// Best-effort and deliberately silent about failure: a `reset-failed` that
+/// cannot run must never block the restart that matters. Without it, failed
+/// transient units accumulate without bound across evolves.
+pub(crate) fn sweep_stale_evolve_units(use_user_units: bool, sid: uuid::Uuid) {
+    match build_systemd_cleanup_command(use_user_units).status() {
+        Ok(status) => tracing::debug!(
+            target: "evolve",
+            glob = EVOLVE_UNIT_GLOB,
+            success = status.success(),
+            session_id = %sid,
+            "evolve: reset-failed swept stale evolve units"
+        ),
+        Err(e) => tracing::warn!(
+            target: "evolve",
+            glob = EVOLVE_UNIT_GLOB,
+            error = %e,
+            session_id = %sid,
+            "evolve: could not sweep stale evolve units, the restart still proceeds"
+        ),
+    }
 }
