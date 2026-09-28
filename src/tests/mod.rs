@@ -946,6 +946,7 @@ pub mod slack_thread_persistence_test;
 pub mod stale_topic_eviction_test;
 pub mod subagent_notify_test;
 pub mod target_resolver_test;
+mod telegram_ack_cooldown_gate_test;
 mod telegram_acl_test;
 mod telegram_attachment_tmp_name_test;
 mod telegram_atx_heading_agreement_test;

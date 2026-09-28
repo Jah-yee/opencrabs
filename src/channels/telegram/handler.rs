@@ -331,7 +331,20 @@ async fn persist_group_message(
     }
 }
 
+/// Fire a cosmetic "seen" reaction on a message.
+///
+/// Dropped while a global 429 cooldown is active (#1778): the API rejects
+/// the call with `Retry after` and each rejection risks extending the ban,
+/// for feedback the final response supersedes anyway. Mirrors the cosmetic
+/// drop in `admit_chat_action`; reactions resume once the cooldown clears.
 pub(crate) async fn fire_reaction(bot: &Bot, chat_id: ChatId, msg_id: MessageId, emoji: &str) {
+    if !super::rate_limit::reaction_ack_permitted() {
+        tracing::debug!(
+            "Telegram: dropping ack reaction {emoji} for msg {} during global 429 cooldown",
+            msg_id.0
+        );
+        return;
+    }
     let reaction = teloxide::types::ReactionType::Emoji {
         emoji: map_to_allowed_reaction(emoji),
     };
