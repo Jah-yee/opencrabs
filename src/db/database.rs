@@ -343,6 +343,30 @@ impl Database {
     pub async fn run_migrations(&self) -> Result<()> {
         let migrations = build_migrations();
 
+        // #1779: snapshot the image BEFORE any migration can write to it.
+        //
+        // Deliberately a separate `interact` with its own anyhow error, not a
+        // step inside the migration closure below: that closure's error type is
+        // `rusqlite_migration::Error`, so a snapshot refusal returned from there
+        // would be wrapped in "Failed to run database migrations" — the exact
+        // misleading receipt that made the rpi5 corruption unreadable for two
+        // days. Here the message the operator reads is the one that explains the
+        // restore path.
+        //
+        // `snapshot_dir()` is resolved on THIS task and moved into the closure:
+        // `interact` runs its closure on a `spawn_blocking` thread (deadpool-sync
+        // 0.2.0 `Scope::interact`), where the task-local profile-home override is
+        // not set, so resolving it inside would silently write snapshots into the
+        // default profile's home no matter which profile is starting.
+        let snapshot_dir = crate::db::migration_snapshot::snapshot_dir();
+        self.pool
+            .get()
+            .await
+            .context("Failed to get connection for pre-migration snapshot")?
+            .interact(move |conn| crate::db::migration_snapshot::guard(conn, &snapshot_dir))
+            .await
+            .map_err(interact_err)??;
+
         self.pool
             .get()
             .await
