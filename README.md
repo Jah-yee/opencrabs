@@ -5292,7 +5292,8 @@ If SmartScreen blocks the first run, click **More info** → **Run anyway**.
 
 ### Database Integrity Check Failed / Migrations Refuse to Run
 
-After a power loss (SD-card hosts are the classic case) the SQLite image can lose
+After a power loss, or after a restart that never handed over (the rpi5 incident was
+an `/evolve` that died mid-swap, on NVMe, not an SD card), the SQLite image can lose
 page 1, and OpenCrabs refuses to start rather than migrate over damage:
 
 ```
@@ -5304,25 +5305,234 @@ file, or repair the header, then start again. Your brain files and config are
 untouched.
 ```
 
-**Fix:**
+**Fix, when a snapshot exists:**
 
 1. Find the newest snapshot: `opencrabs doctor` prints it under
-   `Database snapshot:` (or list `~/.opencrabs/backups/`).
+   `📸 Database snapshot:` (or list `~/.opencrabs/backups/`).
 2. Stop the daemon, then copy it over the database file:
    `cp ~/.opencrabs/backups/opencrabs.db.pre-migration-latest ~/.opencrabs/opencrabs.db`
 3. Start again. Sessions and messages written after that snapshot are lost. Brain
    files, `config.toml`, `keys.toml` and the skills directory were never part of
    the image and are untouched by any of this.
 
-**If no snapshot exists** (the image predates this protection, or every boot since
-it has failed before the snapshot could land), repair with SQLite instead:
+Rotation keeps 7 dated copies plus that stable `-latest` alias, so the restore point is
+at most one migration behind you.
+
+**Fix, when no snapshot exists** (the image predates this protection, or every boot
+since it has failed before the snapshot could land): salvage the image. The procedure
+below recovered a 70 MB database holding 36,408 rows with zero loss on 2026-09-28
+(#1779), and every command in it was run before it was written down.
+
+#### Step 1, freeze the file, then work only on copies
+
+Stop the daemon first. Every launch re-runs the `post_create` PRAGMA batch, which is a
+write, so a daemon that keeps restarting keeps damaging the image.
 
 ```bash
-sqlite3 ~/.opencrabs/opencrabs.db "PRAGMA integrity_check;"
-# salvageable: dump and rebuild
-sqlite3 ~/.opencrabs/opencrabs.db .dump > /tmp/opencrabs.sql
-sqlite3 ~/.opencrabs/opencrabs.recovered.db < /tmp/opencrabs.sql
+mkdir -p ~/.opencrabs/rescue/orig
+cp -a ~/.opencrabs/opencrabs.db ~/.opencrabs/rescue/orig/
+chmod -R a-w ~/.opencrabs/rescue/orig/
+cp ~/.opencrabs/rescue/orig/opencrabs.db /tmp/work.db
 ```
+
+Leave `opencrabs.db-wal` and `opencrabs.db-shm` behind: a 0-byte `-wal` holds nothing,
+and a `-shm` from another WAL generation is how a clean recovery acquires a brand new
+mystery. `/tmp/work.db` is deliberately writable, because SQLite refuses
+`PRAGMA journal_mode = WAL` against a read-only file and that error looks like deeper
+damage than it is.
+
+#### Step 2, name the damage
+
+```bash
+sqlite3 /tmp/work.db "PRAGMA integrity_check;"
+dd if=/tmp/work.db bs=4096 count=1 2>/dev/null | strings -n 6 | grep 'CREATE TABLE'
+```
+
+| Output | Damage | Outlook |
+|---|---|---|
+| `Parse error ...: database disk image is malformed (11)` | page 1, the schema page | every row is reachable, once a tool can walk the b-trees by page number |
+| `ok`, or rows naming specific pages | data pages | the unaffected pages, plus whatever salvage reaches |
+
+A `Parse error` or "in prepare" on a plain `PRAGMA` means SQLite died loading the
+schema, before your statement ever ran. Schema lives on page 1, so that is page-1
+damage, and it is the case the rest of this entry is written for. The `strings` line is
+the good-news check: `CREATE TABLE` text in plaintext means the schema survived and
+only its b-tree header is gone.
+
+#### Step 3, the two dead ends, so you do not lose a night to them
+
+```bash
+sqlite3 /tmp/work.db "PRAGMA writable_schema=ON; select count(*) from sqlite_master;"
+# Error in 2nd command line argument: database disk image is malformed
+
+sqlite3 /tmp/work.db .dump > /tmp/work.sql
+# 243 bytes, 0 INSERT lines, and "-- CORRUPTION ERROR" markers
+```
+
+Neither reads `sqlite_master` when page 1's b-tree header is dead. `.dump` is right for
+a consistent image with a broken index and wrong here. Header fields are still
+readable, because they live in the first 100 bytes rather than in the schema:
+
+```bash
+python3 -c "
+import struct
+d = open('/tmp/work.db', 'rb').read(100)
+print('page_size   ', struct.unpack('>H', d[16:18])[0])
+print('user_version', struct.unpack('>I', d[60:64])[0])
+print('application ', struct.unpack('>I', d[68:72])[0])
+"
+```
+
+That is how you learn your `user_version` with no working schema at all, which is what
+tells you in Step 6 whether the rebuild landed at the right one.
+
+#### Step 4, build a sqlite3 new enough to recover
+
+A distro CLI is probably too old to help: Raspbian's 3.40.1 printed 173 bytes and zero
+rows against this exact damage, and 3.53.4 returned every row. There is no prebuilt
+Linux CLI for aarch64 (sqlite.org ships `sqlite-tools-linux-x64` only), so build it
+from the amalgamation. Under a minute on a Pi 5, no install:
+
+```bash
+sudo apt install -y build-essential   # if gcc is missing
+cd /tmp && curl -sSLO https://www.sqlite.org/2026/sqlite-amalgamation-3530400.zip
+unzip -oq sqlite-amalgamation-3530400.zip
+cd sqlite-amalgamation-3530400
+gcc -O1 -DSQLITE_ENABLE_DBPAGE_VTAB -o /tmp/sql353 shell.c sqlite3.c -lpthread -ldl
+/tmp/sql353 --version
+```
+
+`-DSQLITE_ENABLE_DBPAGE_VTAB` is not optional, and it is the easiest thing here to get
+wrong. Without it the build succeeds, prints a normal version string, and then answers
+`.recover` with `Error: unknown command or invalid arguments: "recover"`, which reads
+like a corrupt download rather than a missing compile-time define.
+
+#### Step 5, recover to a file, never to a pipe
+
+```bash
+/tmp/sql353 /tmp/work.db ".recover" > /tmp/rec.sql 2> /tmp/rec.err
+```
+
+Piping `.recover` into `sqlite3` discards exactly the partial SQL it exists to emit.
+Then take a census, because a large file proves nothing on its own:
+
+```bash
+wc -c /tmp/rec.sql                                    # bytes, not proof
+grep -c "^INSERT OR IGNORE INTO '" /tmp/rec.sql        # rows in named tables
+grep -oE "^INSERT OR IGNORE INTO '[^']+'" /tmp/rec.sql |
+  sed "s/.*'\(.*\)'/\1/" | sort | uniq -c | sort -rn   # per-table census
+grep -ci lost_and_found /tmp/rec.sql                   # salvage-form lines
+grep -nE "^PRAGMA user_version" /tmp/rec.sql           # version preserved?
+head -5 /tmp/rec.err
+```
+
+The census names which of two recoveries you are holding:
+
+| Census | What happened | Next |
+|---|---|---|
+| per-table counts you recognise, `lost_and_found` 0 | schema was readable; every row reached its own table | Step 6, then you are done |
+| `^INSERT OR IGNORE` 0 and `lost_and_found` above 0 | page 1's schema is gone; rows are recovered but unnamed | Step 7 first |
+
+Sum the census against what you expect, and read the pairs that must travel together
+(`cron_jobs` beside `cron_job_runs`, `sessions` beside `messages`). A census that
+closes on the arithmetic is the difference between a full recovery and a partial one.
+
+#### Step 6, rebuild and verify
+
+```bash
+rm -f /tmp/rebuilt.db
+/tmp/sql353 /tmp/rebuilt.db < /tmp/rec.sql
+/tmp/sql353 /tmp/rebuilt.db "PRAGMA integrity_check; PRAGMA user_version;"
+/tmp/sql353 /tmp/rebuilt.db "select count(*) from sqlite_master where type='table';"
+```
+
+Use the new binary for the load too; the dump's preamble carries dot-commands an old
+shell may reject. The `defensive off` line it echoes is the CLI printing the dump's own
+`.dbconfig` command, not an error.
+
+Expect `ok`, the `user_version` you read in Step 3, and a table count matching a healthy
+database at that version. `.recover` emits `PRAGMA user_version`, so migrations will
+not re-run over columns that already exist. If the load throws, do not retry into the
+same file: rename it and start over, so a half-loaded image cannot masquerade as a
+clean one.
+
+#### Step 7, only if the rows came back as `lost_and_found`
+
+That table is `(rootpgno, pgno, nfield, id, c0, c1, ...)`: the b-tree each record came
+from, how many fields it has, then the values in column order. Nothing is lost, nothing
+is named. Rebuild the real schema from the migration files in `src/migrations/` applied
+in filename order, then move each root page's rows into its table.
+
+Filter by `nfield` as well as `rootpgno`, and never `select *` from the salvage table. A
+`TEXT PRIMARY KEY` table emits its autoindex as a root page too, so a 21-column
+`cron_jobs` holding two jobs shows up as four salvage rows across two root pages, and a
+naive remap both double-counts the table and inserts index entries as data:
+
+```
+rootpgno  nfield  rows
+2         21      2      <- the cron_jobs table
+3         2       2      <- sqlite_autoindex_cron_jobs_1, ignore it
+```
+
+```bash
+sqlite3 /tmp/fresh.db < /path/to/cron_migrations.sql
+/tmp/sql353 /tmp/fresh.db <<'SQL'
+attach '/tmp/rebuilt.db' as s;
+insert into cron_jobs(id, name, cron_expr, timezone, prompt, provider, model, thinking,
+                      auto_approve, deliver_to, enabled, last_run_at, next_run_at,
+                      created_at, updated_at, deliver_api_key, profile_name,
+                      trigger_cmd, trigger_on, set_goal, goal_template)
+select c0, c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13, c14, c15, c16,
+       c17, c18, c19, c20
+  from s.lost_and_found where rootpgno = 2;
+detach s;
+SQL
+```
+
+Check the column order against the migration before you select, then verify the result
+row by row: `select id, name, cron_expr, length(prompt) from cron_jobs`. A prompt over
+8 KB lives on overflow pages, so `length(prompt)` returning the full value is the check
+that those chains came back. `typeof()` on the same column checks an older, unrelated
+failure mode (migration `20260517000001_cron_jobs_text_recast.sql`): a `blob` there is
+a text-recast bug, not corruption, and `UPDATE cron_jobs SET prompt =
+CAST(prompt AS TEXT) WHERE typeof(prompt) = 'blob';` clears it.
+
+#### Step 8, swap it in, keeping every way back
+
+```bash
+mkdir -p ~/.opencrabs/rescue/stale
+mv ~/.opencrabs/opencrabs.db      ~/.opencrabs/rescue/stale/opencrabs.db.broken-$(date +%Y%m%d)
+mv ~/.opencrabs/opencrabs.db-wal  ~/.opencrabs/rescue/stale/ 2>/dev/null
+mv ~/.opencrabs/opencrabs.db-shm  ~/.opencrabs/rescue/stale/ 2>/dev/null
+cp /tmp/rebuilt.db ~/.opencrabs/opencrabs.db
+```
+
+Nothing here deletes anything. `rescue/orig/` stays read-only, `rescue/stale/` holds
+the broken image, and `/tmp/rec.sql` is a plain-SQL reconstruction of the whole
+database, so there are three ways back from any single step. The stale `-wal`/`-shm`
+moves with the file rather than staying beside it.
+
+Then boot once and read the receipt, because migrations pending on the recovered file
+apply on that first boot and the numbers should move up on purpose:
+
+```bash
+sqlite3 ~/.opencrabs/opencrabs.db "PRAGMA integrity_check; PRAGMA user_version;"
+sqlite3 ~/.opencrabs/opencrabs.db "select count(*) from sqlite_master where type='table';"
+```
+
+If `user_version` rose and the table count grew by exactly the tables those pending
+migrations create, the file is current. If boot instead reports the file as coming from
+a *future* version, stop: your installed binary predates the recovered schema and
+continuing is a downgrade.
+
+Prove the scheduler can read the rows, not merely that SQL can: `opencrabs cron list`,
+or the `cron_manage` tool's `list` action, and check the jobs return with sane next-run
+times. An empty list over a database that `select`s fine is the storage-class bug
+above, not corruption.
+
+Keep `rescue/orig/` and the dump until the jobs, sessions and messages have behaved for
+a day. The dump is also your portable copy: plain SQL outlives whatever the image
+format becomes next.
 
 The refusal is deliberate. The old behaviour was to run the migration against the
 damaged page anyway and die on the migration error, which destroyed the only copy
