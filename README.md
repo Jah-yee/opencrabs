@@ -3517,6 +3517,7 @@ OpenCrabs includes 40+ built-in tools. The AI can use these during conversation:
 | `load_brain_file` | Load any brain context file from `~/.opencrabs/` on demand (USER.md, MEMORY.md, AGENTS.md, TOOLS.md, SECURITY.md, etc.) |
 | `write_opencrabs_file` | Write or edit any file under `~/.opencrabs/` (brain files, memory logs, commands.toml). Enforces append-only + dedup-aware shrink + `.bak` snapshots on the 9 protected brain files (SOUL/USER/AGENTS/TOOLS/CODE/SECURITY/MEMORY/BOOT) |
 | `evolve` | Download latest release binary from GitHub and hot-restart (no Rust toolchain needed). Also runs automatically on startup and every 24h when `[agent] auto_update = true` (default), and via the `/evolve` slash command — both paths invoke the tool directly without the LLM, so they can't be dropped or refused by a provider |
+| `evolve` on a Homebrew install | The upgrade is delegated to `brew upgrade opencrabs` instead of swapping the binary, so brew's manifest and the Cellar agree with what is on disk. Each `brew` child runs under a 600s budget and is killed when it overruns, and the killed message names the check to run (`brew list --versions opencrabs`), because a killed upgrade may have written the new keg without repointing the symlink. The version reported afterwards is read back from brew, never borrowed from the GitHub release name fetched before brew ran; if brew reports nothing, none is claimed. On a systemd host the same delayed-restart timer the download path arms is armed as a backstop, so a restart that dies still comes back (#1779) |
 | `rebuild` | Build from source (`cargo build --release`) and hot-restart |
 | `suggest_options` | Surface up to 8 short options for the user to pick as their next input. Channel-agnostic: native buttons where the channel has them, numbered text where it does not. Options carry styles (`primary`/`danger`/default); a single option renders as one tap-to-confirm button; the first word of each option must be distinctive or the set is refused (#1611) |
 | `goal_manage` | Set and manage an autonomous goal for the session, so the agent can drive itself toward it across turns |
@@ -4768,6 +4769,40 @@ flowchart LR
     end
 ```
 
+### Durability: check the image, snapshot it, then migrate
+
+The SQLite image is the one piece of state a bad migration can damage and a
+restart cannot heal, so startup protects it twice before any DDL runs (#1779):
+
+1. **Integrity preflight.** `PRAGMA integrity_check` runs against the image
+   *before* any migration, on its own read-write connection. It cannot go
+   through the pool: `post_create` applies `PRAGMA journal_mode = WAL`, which is
+   itself a write, so on a torn image the pool never produces a connection and a
+   check that needed one would be unreachable in exactly the incident it exists
+   to catch. A damaged image refuses, and nothing is written.
+2. **Pre-migration snapshot.** A healthy image is copied with `VACUUM INTO` to
+   `~/.opencrabs/backups/opencrabs.db.pre-migration-<user_version>-<stamp>`, plus
+   a stable `opencrabs.db.pre-migration-latest` alias. `VACUUM INTO` rather than
+   a file copy because it is the only form safe against a live writer: a plain
+   copy of a WAL database can catch a half-written page. The 7 most recent dated
+   copies are kept and older ones pruned on each boot. A fresh or in-memory image
+   skips silently.
+
+Migrations run only when both pass. If the snapshot cannot be taken on a
+non-empty image, the process refuses to migrate rather than issuing `ALTER TABLE`
+against an already-torn page 1, which is how one incident lost every cron row
+while the file being overwritten was the only copy of itself. The refusal names
+the stage, the cause, the snapshot directory, and what is untouched (brain files,
+config and keys are never part of the image).
+
+Corruption is reported wherever an operator can read it, not only on a screen:
+the TUI banner keeps its consuming read, while the daemon startup log and
+`opencrabs doctor` take a non-consuming peek, so a headless host (systemd,
+Docker, a Pi on an SD card) is not blind. Doctor prints the newest snapshot path
+under `Database snapshot:`, or `Database integrity:` when the check failed. The
+restore is a copy of that file over the database path; see
+[Troubleshooting](#database-integrity-check-failed--migrations-refuse-to-run).
+
 ## 9. Channel Integration
 
 ```mermaid
@@ -5254,6 +5289,46 @@ Add-MpPreference -ExclusionPath "C:\path\to\opencrabs.exe"
 ```
 
 If SmartScreen blocks the first run, click **More info** → **Run anyway**.
+
+### Database Integrity Check Failed / Migrations Refuse to Run
+
+After a power loss (SD-card hosts are the classic case) the SQLite image can lose
+page 1, and OpenCrabs refuses to start rather than migrate over damage:
+
+```
+Refusing to run database migrations: the pre-migration integrity check failed
+(integrity_check reported "..." ). An earlier snapshot is still available at
+~/.opencrabs/backups/opencrabs.db.pre-migration-23-20260928-041500. Nothing has
+been written to the database. Restore it by copying a snapshot over the database
+file, or repair the header, then start again. Your brain files and config are
+untouched.
+```
+
+**Fix:**
+
+1. Find the newest snapshot: `opencrabs doctor` prints it under
+   `Database snapshot:` (or list `~/.opencrabs/backups/`).
+2. Stop the daemon, then copy it over the database file:
+   `cp ~/.opencrabs/backups/opencrabs.db.pre-migration-latest ~/.opencrabs/opencrabs.db`
+3. Start again. Sessions and messages written after that snapshot are lost. Brain
+   files, `config.toml`, `keys.toml` and the skills directory were never part of
+   the image and are untouched by any of this.
+
+**If no snapshot exists** (the image predates this protection, or every boot since
+it has failed before the snapshot could land), repair with SQLite instead:
+
+```bash
+sqlite3 ~/.opencrabs/opencrabs.db "PRAGMA integrity_check;"
+# salvageable: dump and rebuild
+sqlite3 ~/.opencrabs/opencrabs.db .dump > /tmp/opencrabs.sql
+sqlite3 ~/.opencrabs/opencrabs.recovered.db < /tmp/opencrabs.sql
+```
+
+The refusal is deliberate. The old behaviour was to run the migration against the
+damaged page anyway and die on the migration error, which destroyed the only copy
+of the data while reporting a bare "Failed to run database migrations" (#1779).
+The same check now also runs *after* migrations, and a failure there is logged by
+the daemon and reported by `doctor` as well as shown on the TUI banner.
 
 ---
 
