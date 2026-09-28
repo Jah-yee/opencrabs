@@ -16,7 +16,7 @@
 //! always point at exactly one file instead of globbing for the newest.
 
 use anyhow::{Context, Result, bail};
-use rusqlite::Connection;
+use rusqlite::{Connection, OpenFlags};
 use std::path::{Path, PathBuf};
 
 /// Dated snapshots kept before the oldest is pruned.
@@ -165,8 +165,17 @@ pub fn rotate(dir: &Path) -> Result<usize> {
     Ok(removed)
 }
 
-/// Explain a refused migration in terms of what to do next, not only what broke.
-pub fn refusal_message(dir: &Path, cause: &str) -> String {
+/// The refusal an operator acts on, worded for the stage that found the damage.
+///
+/// Explains what to do next, not only what broke.
+///
+/// `stage` is spelled out per call site instead of sharing one generic phrase
+/// because the two stages fail for different reasons, and the reader is usually
+/// panicked and reading over SSH: "the pre-migration integrity check failed"
+/// says the image was already broken, "the pre-migration snapshot failed" says
+/// the copy could not be made. Collapsing them into "something failed" is what
+/// made the original rpi5 receipt useless two days into the incident.
+fn refuse(stage: &str, dir: &Path, cause: &str) -> String {
     let latest = dir.join(LATEST);
     let hint = if latest.exists() {
         format!(
@@ -177,11 +186,16 @@ pub fn refusal_message(dir: &Path, cause: &str) -> String {
         format!("No snapshot exists in {} yet.", dir.display())
     };
     format!(
-        "Refusing to run database migrations: the pre-migration snapshot failed ({cause}). \
+        "Refusing to run database migrations: {stage} ({cause}). \
          {hint} Nothing has been written to the database. \
          Restore it by copying a snapshot over the database file, or repair the header, \
          then start again. Your brain files and config are untouched."
     )
+}
+
+/// Refusal for a snapshot that could not be made.
+pub fn refusal_message(dir: &Path, cause: &str) -> String {
+    refuse("the pre-migration snapshot failed", dir, cause)
 }
 
 /// Guard used by `run_migrations`. `Ok(())` means "safe to migrate".
@@ -200,6 +214,42 @@ pub fn guard(conn: &Connection, dir: &Path) -> Result<()> {
         Ok(None) => Ok(()),
         Err(e) => bail!("{}", refusal_message(dir, &e.to_string())),
     }
+}
+
+/// Check the image before any migration can write to it (#1779 defect 2).
+///
+/// Deliberately NOT routed through the pool. `post_create` applies
+/// `PRAGMA journal_mode = WAL`, which is a *write*, so on a torn image the pool
+/// cannot produce a connection at all, and a check that needs one is unreachable
+/// in the exact incident it exists to catch. The rpi5 receipt is literally
+/// "post_create hook failed: database disk image is malformed", emitted from
+/// `pool.get()` before a single line of migration code ran. So this opens its
+/// own read-write connection to the file instead.
+///
+/// `integrity_check` rather than `quick_check`: quick_check skips the page-ref
+/// and freelist walks, and a torn page 1 breaks precisely those. The cost is the
+/// same one the post-migration check already paid on every startup.
+///
+/// A damaged image reports as an `Err` from the pragma, not as a row that says
+/// so. Verified 2026-09-28 against a real file: blanking bytes 100..200 (the
+/// page-1 b-tree header) leaves the magic intact and makes `integrity_check`
+/// fail with SQLITE_CORRUPT instead of returning text, so `Err` is a verdict
+/// here and must refuse, never escape as if the plumbing broke.
+pub fn integrity_preflight(path: &str, dir: &Path) -> Result<()> {
+    let cause = match Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE) {
+        Err(e) => format!("the database could not be opened ({e})"),
+        Ok(conn) => {
+            match conn.pragma_query_value(None, "integrity_check", |row| row.get::<_, String>(0)) {
+                Ok(report) if report == "ok" => return Ok(()),
+                Ok(report) => format!("integrity_check reported {report:?}"),
+                Err(e) => format!("integrity_check could not run ({e})"),
+            }
+        }
+    };
+    bail!(
+        "{}",
+        refuse("the pre-migration integrity check failed", dir, &cause)
+    );
 }
 
 #[cfg(test)]

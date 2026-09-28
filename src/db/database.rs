@@ -207,6 +207,13 @@ pub(crate) fn heal_analytics_migration_33(conn: &rusqlite::Connection) -> rusqli
 /// Database connection manager
 pub struct Database {
     pub(crate) pool: Pool,
+    /// The file the pool is backed by, or `None` for an in-memory database.
+    ///
+    /// Kept next to the pool rather than read off a connection because the
+    /// pre-migration integrity check must reach the image *without* borrowing a
+    /// pooled connection (#1779 defect 2): on a torn image `post_create` fails
+    /// and the pool never yields one.
+    pub(crate) db_path: Option<String>,
 }
 
 /// Apply PRAGMA settings to a rusqlite connection.
@@ -286,7 +293,10 @@ impl Database {
         // provider streaming persistence) can still write to the DB. Safe to
         // ignore the error — only the first connect wins.
         let _ = GLOBAL_POOL.set(pool.clone());
-        Ok(Self { pool })
+        Ok(Self {
+            pool,
+            db_path: Some(path_str),
+        })
     }
 
     /// Connect to an in-memory database (for testing)
@@ -322,7 +332,10 @@ impl Database {
             .context("Failed to create in-memory pool")?;
 
         tracing::debug!("Connected to in-memory database");
-        Ok(Self { pool })
+        Ok(Self {
+            pool,
+            db_path: None,
+        })
     }
 
     /// Get a reference to the connection pool
@@ -348,7 +361,7 @@ impl Database {
         // Deliberately a separate `interact` with its own anyhow error, not a
         // step inside the migration closure below: that closure's error type is
         // `rusqlite_migration::Error`, so a snapshot refusal returned from there
-        // would be wrapped in "Failed to run database migrations" — the exact
+        // would be wrapped in "Failed to run database migrations", the exact
         // misleading receipt that made the rpi5 corruption unreadable for two
         // days. Here the message the operator reads is the one that explains the
         // restore path.
@@ -359,6 +372,20 @@ impl Database {
         // not set, so resolving it inside would silently write snapshots into the
         // default profile's home no matter which profile is starting.
         let snapshot_dir = crate::db::migration_snapshot::snapshot_dir();
+
+        // #1779 defect 2: this used to be the check *after* the migrations, so
+        // on a corrupt image it never ran and the operator died on the
+        // migration error with no restore path. It goes first, ahead of the
+        // snapshot guard, because on the rpi5 shape `VACUUM INTO` fails too
+        // (verified: SQLITE_CORRUPT while stepping), so snapshotting a torn
+        // image buys nothing and only spends a write attempt.
+        //
+        // Skipped when there is no file to check (in-memory database), which is
+        // every test that uses `connect_in_memory`.
+        if let Some(path) = self.db_path.as_deref() {
+            crate::db::migration_snapshot::integrity_preflight(path, &snapshot_dir)?;
+        }
+
         self.pool
             .get()
             .await

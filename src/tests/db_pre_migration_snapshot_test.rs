@@ -268,5 +268,138 @@ async fn migrations_are_refused_when_the_snapshot_cannot_be_taken() {
     let canary: String = conn
         .query_row("SELECT x FROM canary", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(canary, "nicole", "the pre-existing row must survive refusal");
+    assert_eq!(
+        canary, "nicole",
+        "the pre-existing row must survive refusal"
+    );
+}
+
+// ------------------------------------------------------------ corrupt image
+
+/// The rpi5 shape: a valid magic and header over a page-1 b-tree that no
+/// longer parses.
+///
+/// Blanking bytes 100..200 leaves the file openable but makes
+/// `PRAGMA integrity_check` fail with SQLITE_CORRUPT instead of returning a
+/// report row. Verified 2026-09-28 against the sqlite3 CLI, where it was the
+/// candidate that reproduced the incident's exact error string (a flipped byte
+/// at 150, at 300, or a zeroed change counter all still report `ok`, so they
+/// prove nothing). That distinction is the point of this corruption: a check
+/// treating only non-`"ok"` *text* as damage waves this through, because there
+/// is no text at all.
+///
+/// Returns the corrupted bytes so a test can prove nothing was written back.
+fn corrupt_page_one(path: &Path) -> Vec<u8> {
+    let mut bytes = std::fs::read(path).unwrap();
+    bytes[100..200].fill(0);
+    std::fs::write(path, &bytes).unwrap();
+    bytes
+}
+
+#[tokio::test]
+async fn corrupt_image_is_refused_before_any_migration_runs() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().join(".opencrabs");
+    std::fs::create_dir_all(&home).unwrap();
+    let db_path = seeded_db(&home);
+    let corrupted = corrupt_page_one(&db_path);
+
+    let err = with_home_override_async(home.clone(), async {
+        let db = Database::connect(&db_path).await.unwrap();
+        db.run_migrations().await.unwrap_err()
+    })
+    .await;
+
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("Refusing to run database migrations"),
+        "a corrupt image must refuse, not migrate: {msg}"
+    );
+    assert!(
+        msg.contains("the pre-migration integrity check failed"),
+        "the message must name the stage that found the damage, not blur it \
+         into a snapshot failure: {msg}"
+    );
+    assert!(
+        msg.contains(&home.join("backups").display().to_string()),
+        "the message must name the directory the operator restores from: {msg}"
+    );
+    assert!(
+        msg.contains("brain files and config are untouched"),
+        "the message must bound the blast radius: {msg}"
+    );
+    assert!(
+        !msg.contains("Failed to run database migrations"),
+        "the misleading wording that hid the rpi5 cause must not resurface: {msg}"
+    );
+    assert!(
+        !msg.contains("post_create hook failed"),
+        "the check must not depend on the pool: on a torn image post_create \
+        cannot produce a connection at all: {msg}"
+    );
+
+    // Refusing must also mean not writing. A startup that reports corruption
+    // and then rewrites the header is how the rpi5 rows were lost a second
+    // time, so this is the half of the promise the operator cannot recover
+    // without.
+    assert_eq!(
+        std::fs::read(&db_path).unwrap(),
+        corrupted,
+        "a refused startup must not write a single byte to the image"
+    );
+}
+
+/// The post-migration check survives the reordering: a healthy image migrates
+/// and comes out with the flag clear, so the flag keeps meaning "damage" and
+/// never "the check ran".
+#[tokio::test]
+async fn healthy_image_still_passes_the_post_migration_check() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().join(".opencrabs");
+    std::fs::create_dir_all(&home).unwrap();
+    let db_path = seeded_db(&home);
+
+    with_home_override_async(home.clone(), async {
+        let db = Database::connect(&db_path).await.unwrap();
+        db.run_migrations().await.unwrap();
+    })
+    .await;
+
+    assert!(
+        tables_in(&db_path).contains(&"sessions".to_string()),
+        "migrations must have run on a healthy image"
+    );
+    assert!(
+        !crate::db::db_integrity_failed(),
+        "a healthy image must not trip the integrity flag"
+    );
+}
+
+/// Defect 2 is an ordering defect, so it is pinned by order. Behaviour proves
+/// the pre-flight refuses; only a structural pin stops someone moving the
+/// second check back in front of the migrations, where it would be useless
+/// twice over.
+#[test]
+fn integrity_checks_straddle_the_migration_write() {
+    const SRC: &str = include_str!("../db/database.rs");
+
+    let preflight = SRC
+        .find("integrity_preflight(")
+        .expect("pre-migration integrity check must exist in run_migrations");
+    let write = SRC
+        .find("migrations.to_latest(conn)")
+        .expect("the migration write must exist");
+    let flag = SRC
+        .find("DB_INTEGRITY_FAILED.store(true")
+        .expect("the post-migration check must still set the integrity flag");
+
+    assert!(
+        preflight < write,
+        "integrity check must run BEFORE migrations, found preflight at {preflight} and the write at {write}"
+    );
+    assert!(
+        flag > write,
+        "the post-migration check must still run AFTER migrations, found the \
+         flag at {flag} and the write at {write}"
+    );
 }

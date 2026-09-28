@@ -236,11 +236,28 @@ pub(crate) async fn cmd_doctor(config: &crate::config::Config, fix: bool) -> Res
     if db_path.exists() {
         match Database::connect(db_path).await {
             Ok(db) => {
-                db.run_migrations().await.ok();
-                println!("  ✅ Database: {}", db_path.display());
-                pass += 1;
-                if fix {
-                    apply_fixes(config, db.pool()).await;
+                // #1779: the pre-migration guard refuses on a damaged image, and
+                // `.ok()` threw that refusal away, so doctor printed
+                // "✅ Database" over a corrupt file. That is precisely the
+                // blindness the rpi5 operator hit while looking for a signal, so
+                // the refusal is reported here instead of discarded.
+                //
+                // Note what this does NOT fix: `doctor` still returns Ok and
+                // still exits 0 with failures counted, so a script cannot gate on
+                // it. That is a separate defect about the whole command, not
+                // about the database check.
+                match db.run_migrations().await {
+                    Ok(()) => {
+                        println!("  ✅ Database: {}", db_path.display());
+                        pass += 1;
+                        if fix {
+                            apply_fixes(config, db.pool()).await;
+                        }
+                    }
+                    Err(e) => {
+                        println!("  ❌ Database: {e:#}");
+                        fail += 1;
+                    }
                 }
             }
             Err(e) => {
