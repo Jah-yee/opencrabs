@@ -1014,6 +1014,10 @@ impl AgentService {
                         }
                     }
                 }
+                // #1776: CLI background-task lifecycle events are informational;
+                // they carry no response content, so the assembler ignores them
+                // (the provider already logged the event at info level).
+                StreamEvent::BackgroundTask { .. } => {}
                 StreamEvent::Error { error } => {
                     crate::config::health::record_failure(provider.name(), &error);
                     return Err(crate::brain::provider::ProviderError::StreamError(error));

@@ -596,8 +596,26 @@ fn resolve_claude_path() -> Result<String> {
 /// A parsed NDJSON message from claude CLI stdout.
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
-enum CliMessage {
-    System {},
+pub(crate) enum CliMessage {
+    /// The CLI's system channel. Carries several disjoint payload shapes by
+    /// `subtype` (`init`, `task_started`, `task_notification`,
+    /// `background_tasks_changed`, ...); every field is optional so all of
+    /// them parse into the same variant (#1776).
+    System {
+        #[serde(default)]
+        subtype: Option<String>,
+        #[serde(default)]
+        task_id: Option<String>,
+        #[serde(default)]
+        status: Option<String>,
+        #[serde(default)]
+        description: Option<String>,
+        /// `task_notification` carries the human text as `summary` (not `description`).
+        #[serde(default)]
+        summary: Option<String>,
+        #[serde(default)]
+        output_file: Option<String>,
+    },
     Assistant {
         message: CliAssistantMessage,
     },
@@ -617,8 +635,46 @@ enum CliMessage {
     },
 }
 
+/// Classify a CLI `system` message's task-lifecycle payload (#1776).
+///
+/// The CLI reports its own background tasks through the system channel as
+/// `task_started`, `task_notification` and `background_tasks_changed`. These
+/// were silently discarded for months (the whole payload reduced to a
+/// `CLI → system` debug line), so a backgrounded task's completion never
+/// surfaced anywhere after the turn's real events. Returns the
+/// [`StreamEvent::BackgroundTask`] to forward, or `None` for every other
+/// system subtype (`init`, ...), which keeps the debug-only path.
+pub(crate) fn system_task_event(
+    subtype: Option<&str>,
+    task_id: Option<String>,
+    status: Option<String>,
+    description: Option<String>,
+    summary: Option<String>,
+    output_file: Option<String>,
+) -> Option<StreamEvent> {
+    // `task_started` carries the human text as `description`;
+    // `task_notification` carries it as `summary`. One field downstream.
+    let description = description.or(summary);
+    const TASK_SUBTYPES: [&str; 3] = [
+        "task_started",
+        "task_notification",
+        "background_tasks_changed",
+    ];
+    let subtype = subtype?;
+    if !TASK_SUBTYPES.contains(&subtype) {
+        return None;
+    }
+    Some(StreamEvent::BackgroundTask {
+        subtype: subtype.to_string(),
+        task_id,
+        status,
+        description,
+        output_file,
+    })
+}
+
 #[derive(Debug, Deserialize)]
-struct CliAssistantMessage {
+pub(crate) struct CliAssistantMessage {
     pub id: Option<String>,
     pub model: Option<String>,
     pub usage: Option<CliUsage>,
@@ -628,7 +684,7 @@ struct CliAssistantMessage {
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
-enum CliContentBlock {
+pub(crate) enum CliContentBlock {
     Text {
         text: String,
     },
@@ -645,7 +701,7 @@ enum CliContentBlock {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-struct CliUsage {
+pub(crate) struct CliUsage {
     #[serde(default)]
     pub input_tokens: u32,
     #[serde(default)]
@@ -896,9 +952,32 @@ impl Provider for ClaudeCliProvider {
                 };
 
                 match msg {
-                    CliMessage::System { .. } => {
-                        tracing::debug!("CLI → system");
-                    }
+                    CliMessage::System {
+                        subtype,
+                        task_id,
+                        status,
+                        description,
+                        summary,
+                        output_file,
+                    } => match system_task_event(
+                        subtype.as_deref(),
+                        task_id,
+                        status,
+                        description,
+                        summary,
+                        output_file,
+                    ) {
+                        Some(ev) => {
+                            tracing::info!(
+                                event = ?ev,
+                                "CLI background-task event surfaced (#1776)"
+                            );
+                            if tx.send(Ok(ev)).await.is_err() {
+                                break;
+                            }
+                        }
+                        None => tracing::debug!("CLI → system"),
+                    },
 
                     CliMessage::StreamEvent { event } => {
                         // Real-time SSE events from CLI — forward directly.

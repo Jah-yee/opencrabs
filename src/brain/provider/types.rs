@@ -383,6 +383,17 @@ pub enum StreamEvent {
     Ping,
     /// Error event
     Error { error: String },
+    /// Claude CLI background-task lifecycle event, surfaced from the CLI's
+    /// system channel (#1776). Informational: consumers may ignore it like
+    /// [`StreamEvent::Ping`].
+    BackgroundTask {
+        /// `task_started` | `task_notification` | `background_tasks_changed`
+        subtype: String,
+        task_id: Option<String>,
+        status: Option<String>,
+        description: Option<String>,
+        output_file: Option<String>,
+    },
 }
 
 /// Partial message information at stream start
