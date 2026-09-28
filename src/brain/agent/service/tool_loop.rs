@@ -8164,6 +8164,24 @@ impl AgentService {
             }
         }
 
+        // Channel-safe suggest_options recovery (#1774): a model that fails
+        // to emit the structured call sometimes writes it as TEXT —
+        // <<suggest_options>> markers around a JSON options array (see
+        // utils::directives). Recover at the settle point: strip the block
+        // from the delivered text and fire the real SuggestedOptions event
+        // so every surface renders native buttons. An unparseable block
+        // still loses its markers: raw markers and raw JSON never ship.
+        if let Some(cb) = self.progress_callback.as_ref() {
+            let (cleaned, recovered) =
+                crate::utils::directives::extract_leaked_suggestions(&final_text);
+            if cleaned != final_text {
+                final_text = cleaned;
+            }
+            if let Some(items) = recovered {
+                cb(session_id, ProgressEvent::SuggestedOptions(items));
+            }
+        }
+
         Ok(AgentResponse {
             message_id: assistant_db_msg.id,
             content: final_text,
