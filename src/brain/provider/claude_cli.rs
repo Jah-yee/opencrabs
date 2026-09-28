@@ -806,7 +806,8 @@ impl Provider for ClaudeCliProvider {
         // when concurrent requests (TUI + Telegram/Slack) shared the same session.
         let session_id_str = uuid::Uuid::new_v4().to_string();
 
-        let mut child = tokio::process::Command::new(&self.claude_path)
+        let mut command = tokio::process::Command::new(&self.claude_path);
+        command
             .env_remove("CLAUDECODE")
             .env_remove("CLAUDE_CODE_ENTRYPOINT")
             .arg("-p")
@@ -829,7 +830,13 @@ impl Provider for ClaudeCliProvider {
             .current_dir(&cwd)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+            .stderr(Stdio::piped());
+        // #1776: put the CLI in its own process group (pgid == its pid) so a
+        // cancelled stream can kill shell grandchildren (bash -c tools) that
+        // a direct child.kill() would orphan.
+        #[cfg(unix)]
+        command.process_group(0);
+        let mut child = command
             .spawn()
             .map_err(|e| ProviderError::Internal(format!("failed to spawn claude CLI: {}", e)))?;
 
@@ -909,6 +916,18 @@ impl Provider for ClaudeCliProvider {
                     biased;
                     _ = tx.closed() => {
                         tracing::info!("CLI stream cancelled — killing subprocess");
+                        // #1776: the CLI was spawned with process_group(0), so
+                        // its pgid equals its pid. Signal the negative pgid to
+                        // take down shell grandchildren (bash -c tools) a
+                        // direct child.kill() would leave behind.
+                        #[cfg(unix)]
+                        if let Some(pid) = child.id() {
+                            // SAFETY: kill(2) on a process we spawned; ESRCH
+                            // after an already-exited group is harmless.
+                            unsafe {
+                                libc::kill(-(pid as libc::pid_t), libc::SIGKILL);
+                            }
+                        }
                         if let Err(e) = child.kill().await {
                         tracing::warn!(error = %e, "failed to kill Claude CLI child process");
                     }
