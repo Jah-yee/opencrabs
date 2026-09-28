@@ -27,6 +27,17 @@ pub fn db_integrity_failed() -> bool {
     DB_INTEGRITY_FAILED.swap(false, std::sync::atomic::Ordering::Relaxed)
 }
 
+/// Non-consuming read of the same flag (#1779 defect 4).
+///
+/// `db_integrity_failed()` SWAPS, so the first reader wins and every later
+/// reader sees `false`. The startup path in `cmd_chat_inner` runs before the TUI
+/// is built, so a consuming read there would silence the banner for the one user
+/// actually looking at a screen. Logging surfaces (daemon startup, `doctor`)
+/// peek; the TUI banner keeps the consuming read.
+pub fn db_integrity_failed_now() -> bool {
+    DB_INTEGRITY_FAILED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Type alias for database pool
 pub type Pool = DeadPool;
 

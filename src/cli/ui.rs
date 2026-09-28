@@ -436,10 +436,32 @@ async fn cmd_chat_inner(
         .await
         .context("Failed to connect to database")?;
 
-    // Run migrations
-    db.run_migrations()
-        .await
-        .context("Failed to run database migrations")?;
+    // Run migrations.
+    //
+    // No `.context()` here on purpose (#1779): `run_migrations` already returns
+    // the operator-facing refusal when it declines to migrate, and wrapping it
+    // re-added the bare "Failed to run database migrations" prefix at the head
+    // of the chain. That prefix is exactly what made the rpi5 receipt unreadable
+    // for two days, and this is the line a daemon operator actually reads.
+    db.run_migrations().await?;
+
+    // #1779 defect 4: the integrity flag had exactly one consumer, the TUI
+    // banner, so a headless daemon (the rpi5 shape) detected the corruption,
+    // stored the verdict, and said nothing at all. Log it where an operator can
+    // find it without a screen: journald, or the daemon err log.
+    //
+    // Non-consuming read on purpose. This runs before the TUI is built, and
+    // `db_integrity_failed()` SWAPS, so reading it here would rob the banner.
+    if crate::db::db_integrity_failed_now() {
+        let snapshot_dir = crate::db::migration_snapshot::snapshot_dir();
+        let newest = crate::db::migration_snapshot::newest_snapshot(&snapshot_dir);
+        tracing::error!(
+            "Database integrity check FAILED after migrations: data may be corrupted. \
+             Newest pre-migration snapshot: {}. \
+             Your brain files and config are untouched.",
+            crate::db::migration_snapshot::newest_snapshot_note(newest.as_deref())
+        );
+    }
 
     // #1114: optional startup self-repair (kill-switch: [doctor] auto_fix).
     // Repairs stuck cron rows, stale pre-init plan markers, loose brain/log

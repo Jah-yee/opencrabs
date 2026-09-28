@@ -250,6 +250,29 @@ pub(crate) async fn cmd_doctor(config: &crate::config::Config, fix: bool) -> Res
                     Ok(()) => {
                         println!("  ✅ Database: {}", db_path.display());
                         pass += 1;
+                        // #1779 defect 4: doctor reported the image as healthy and
+                        // nothing about whether a copy of it existed to restore.
+                        // The snapshot line makes the recovery asset visible on the
+                        // one command an operator reaches for mid-incident.
+                        let snapshot_dir = crate::db::migration_snapshot::snapshot_dir();
+                        let newest = crate::db::migration_snapshot::newest_snapshot(&snapshot_dir);
+                        if crate::db::db_integrity_failed_now() {
+                            println!(
+                                "  ⚠️  Database integrity: check FAILED after migrations; \
+                                 newest snapshot: {}",
+                                crate::db::migration_snapshot::newest_snapshot_note(
+                                    newest.as_deref()
+                                )
+                            );
+                            warn += 1;
+                        } else {
+                            println!(
+                                "  📸 Database snapshot: {}",
+                                crate::db::migration_snapshot::newest_snapshot_note(
+                                    newest.as_deref()
+                                )
+                            );
+                        }
                         if fix {
                             apply_fixes(config, db.pool()).await;
                         }

@@ -165,6 +165,46 @@ pub fn rotate(dir: &Path) -> Result<usize> {
     Ok(removed)
 }
 
+/// The newest dated snapshot in `dir`, or `None` when nothing has been kept.
+///
+/// Same enumeration as [`rotate`], so the two cannot disagree about what counts
+/// as a snapshot: the `-latest` alias is excluded because it is a pointer and
+/// not a retention unit, and a report naming it would send an operator to copy
+/// a file that silently outlives whatever it points at. Names embed a sortable
+/// timestamp, so lexical order is chronological order.
+pub fn newest_snapshot(dir: &Path) -> Option<PathBuf> {
+    let mut dated: Vec<PathBuf> = std::fs::read_dir(dir)
+        .ok()?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .map(|n| n.starts_with(PREFIX) && n != LATEST)
+                .unwrap_or(false)
+        })
+        .collect();
+    dated.sort();
+    dated.pop()
+}
+
+/// What an operator can restore from, in one clause, for `doctor` and the
+/// startup log (#1779 defect 4).
+///
+/// A pure function over the path rather than a printed line, so the wording is
+/// testable without capturing stdout. Before this, `doctor` was the one command
+/// an operator reaches for mid-incident and it knew only whether the image was
+/// healthy, never whether a copy of it existed.
+pub fn newest_snapshot_note(newest: Option<&Path>) -> String {
+    match newest {
+        Some(path) => format!(
+            "{} (copy it over the database file to restore)",
+            path.display()
+        ),
+        None => "none yet: one is written on the next successful startup".to_string(),
+    }
+}
+
 /// The refusal an operator acts on, worded for the stage that found the damage.
 ///
 /// Explains what to do next, not only what broke.
