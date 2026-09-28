@@ -515,6 +515,7 @@ pub mod html_comment_strip_test;
 pub mod http_request_test;
 pub mod onboard_channel_test;
 pub mod openai_provider_test;
+pub mod openai_stable_model_test;
 pub mod opencode_provider_test;
 pub mod owner_plus_normalization_test;
 pub mod rate_limit_global_cooldown_test;

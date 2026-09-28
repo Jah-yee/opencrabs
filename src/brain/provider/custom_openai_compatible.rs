@@ -3469,29 +3469,11 @@ impl OpenAIProvider {
 /// a backend-local identifier in its response. The request ID is also the one
 /// used for the provider/model session pair, so replacing it with the response
 /// ID can make the next turn fail when the gateway strips a provider prefix.
-fn stable_model_id(response_model: String, requested_model: &str) -> String {
+pub(crate) fn stable_model_id(response_model: String, requested_model: &str) -> String {
     if requested_model.is_empty() {
         response_model
     } else {
         requested_model.to_string()
-    }
-}
-
-#[cfg(test)]
-mod model_id_tests {
-    use super::stable_model_id;
-
-    #[test]
-    fn preserves_provider_prefix_when_gateway_strips_it() {
-        assert_eq!(
-            stable_model_id("gpt-5.6-luna-medium".into(), "codex/gpt-5.6-luna-medium"),
-            "codex/gpt-5.6-luna-medium"
-        );
-    }
-
-    #[test]
-    fn falls_back_to_response_model_without_request_id() {
-        assert_eq!(stable_model_id("backend-model".into(), ""), "backend-model");
     }
 }
 
