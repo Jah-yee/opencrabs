@@ -9,7 +9,7 @@ use crate::config::Config;
 use crate::db::ChannelMessageRepository;
 use crate::db::SessionBindingRepository;
 use crate::services::{ServiceContext, SessionService};
-use crate::utils::retry::{retry_with_check, RetryConfig};
+use crate::utils::retry::{RetryConfig, retry_with_check};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
@@ -101,11 +101,15 @@ impl TelegramAgent {
             // Verify token works with Telegram API before setting up dispatcher
             // #1785: retry on transient network/timeout errors; InvalidToken is
             // permanent so we skip retrying that case.
-            let me = match retry_with_check(
+            match retry_with_check(
                 || async { bot.get_me().await },
                 &RetryConfig::api_aggressive(),
                 |e: &teloxide::RequestError| {
-                    !matches!(e, teloxide::RequestError::InvalidToken)
+                    !matches!(
+                        e,
+                        teloxide::RequestError::Api(api)
+                            if api == &teloxide::ApiError::InvalidToken
+                    )
                 },
             )
             .await
