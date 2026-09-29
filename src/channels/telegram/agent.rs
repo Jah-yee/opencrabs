@@ -9,6 +9,7 @@ use crate::config::Config;
 use crate::db::ChannelMessageRepository;
 use crate::db::SessionBindingRepository;
 use crate::services::{ServiceContext, SessionService};
+use crate::utils::retry::{retry_with_check, RetryConfig};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
@@ -98,7 +99,17 @@ impl TelegramAgent {
             let listener_token = token.clone();
 
             // Verify token works with Telegram API before setting up dispatcher
-            match bot.get_me().await {
+            // #1785: retry on transient network/timeout errors; InvalidToken is
+            // permanent so we skip retrying that case.
+            let me = match retry_with_check(
+                || async { bot.get_me().await },
+                &RetryConfig::api_aggressive(),
+                |e: &teloxide::RequestError| {
+                    !matches!(e, teloxide::RequestError::InvalidToken)
+                },
+            )
+            .await
+            {
                 Ok(me) => {
                     if let Some(ref username) = me.username {
                         tracing::info!("Telegram: bot username is @{}", username);
@@ -125,12 +136,13 @@ impl TelegramAgent {
                     // One-time: organize any pre-subdir flat attachments under
                     // channel_attachments/telegram/ (#513). Idempotent.
                     super::media::migrate_flat_channel_attachments();
+                    me
                 }
                 Err(e) => {
                     tracing::warn!("Telegram: token validation failed: {}. Bot not started.", e);
                     return;
                 }
-            }
+            };
 
             let agent = self.agent_service.clone();
             let session_svc = self.session_service.clone();
